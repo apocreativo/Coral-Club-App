@@ -20,6 +20,7 @@ const initialData = {
     mp: { link: "", alias: "" },
     pagoMovil: { bank: "", rif: "", phone: "" },
     zelle: { email: "", name: "" },
+    // tentPrice se normaliza desde useKV.normalizeState (si no existe, 0)
   },
   categories: [
     {
@@ -114,16 +115,22 @@ export default function App(){
   const [userForm, setUserForm] = useState({ name: '', phoneCountry: '+58', phone: '', email: '' });
   const [myPendingResId, setMyPendingResId] = useState(null);
 
-  // compute totals
+  // ===== Carrito + Total =====
   const [cart, setCart] = useState([]);
-  const total = 
-// --- Precio de toldo normalizado y total ---
-const tentPrice = Number((data?.payments?.tentPrice) ?? 0) || 0;
-const total = useMemo(() => {
-  const extras = cart.reduce((acc, item) => acc + (Number(item.price) || 0) * (item.qty || 0), 0);
-  return (selectedTent ? tentPrice : 0) + extras;
-}, [selectedTent, cart, tentPrice]);
-useMemo(() => cart.reduce((a,b)=> a + b.price*b.qty, 0), [cart]);
+
+  // Normaliza precio del toldo desde KV (si falta, 0)
+  const tentPrice = Number((data?.payments?.tentPrice) ?? 0) || 0;
+
+  // Total = tentPrice (solo si hay toldo seleccionado) + extras
+  const total = useMemo(() => {
+    const cartSafe = Array.isArray(cart) ? cart : [];
+    const extras = cartSafe.reduce(
+      (acc, item) => acc + (Number(item.price) || 0) * (item.qty || 0),
+      0
+    );
+    return (selectedTent ? tentPrice : 0) + extras;
+  }, [selectedTent, cart, tentPrice]);
+
   const resCode = useMemo(()=>{
     const d = new Date(); const s = d.toISOString().replace(/[-:T.Z]/g,"").slice(2,12);
     return `CC-${selectedTent?.id||"XX"}-${s}`;
@@ -657,6 +664,23 @@ useMemo(() => cart.reduce((a,b)=> a + b.price*b.qty, 0), [cart]);
                         <input className="input" value={data?.payments?.whatsapp} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
                       </label>
                     </div>
+
+                    {/* Precio del toldo (fila separada para no romper tu grid) */}
+                    <div className="grid2" style={{ marginTop:6 }}>
+                      <label>
+                        <div>Precio del toldo</div>
+                        <input
+                          className="input"
+                          type="number"
+                          step="0.01"
+                          value={Number((data?.payments?.tentPrice) ?? 0)}
+                          onChange={(e)=> onChangePayments({
+                            tentPrice: parseFloat(e.target.value || "0") || 0
+                          })}
+                        />
+                      </label>
+                    </div>
+
                     <div className="hr"></div>
                     <div className="title">Mercado Pago</div>
                     <div className="grid2" style={{ marginTop:6 }}>
