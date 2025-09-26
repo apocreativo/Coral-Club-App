@@ -1,14 +1,15 @@
 
-# Coral Club — Final Guarded (100% KV + proxy /api/kv)
-- UI/CSS intactos.
-- Multiusuario con Vercel KV (vía proxy serverless).
-- Guards robustos para brand/background/payments para evitar errores en el primer render.
+# Coral Club — Build seguro (no se pone negro)
+- UI y CSS intactos.
+- Sin `/api` ni `@vercel/kv`.
+- useKV nunca lanza excepciones; si falla KV, la app sigue funcionando localmente.
 
-## Variables en Vercel
-KV_REST_API_URL= (sin slash final)
-KV_REST_API_TOKEN=
+## Variables
+Configura en Vercel:
+- VITE_KV_REST_API_URL  (sin slash final)
+- VITE_KV_REST_API_TOKEN
+- VITE_KV_REST_NAMESPACE (opcional)
 
-## Scripts
+## Dev
 npm i
 npm run dev
-npm run build
