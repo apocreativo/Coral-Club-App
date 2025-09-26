@@ -530,11 +530,31 @@ export default function App(){
                   <button className="btn" onClick={()=> setAdminOpen(false)}>Cerrar</button>
                 </div>
                 <div className="row">
-                  <input className="input" id="pin" placeholder="PIN" type="password" />
-                  <button className="btn primary" onClick={()=>{
-                    const v = document.getElementById("pin").value;
-                    v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
-                  }}>Entrar</button>
+                  <input
+                    className="input"
+                    id="pin"
+                    placeholder="PIN"
+                    type="password"
+                    autoFocus
+                    onClick={(e)=> e.stopPropagation()}
+                    onTouchStart={(e)=> e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const v = e.currentTarget.value;
+                        v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
+                      }
+                    }}
+                  />
+                  <button
+                    className="btn primary"
+                    onClick={(e)=>{
+                      e.stopPropagation();
+                      const v = document.getElementById("pin").value;
+                      v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
+                    }}
+                  >
+                    Entrar
+                  </button>
                 </div>
                 <div className="hint" style={{ marginTop:6 }}>Atajos: Alt/⌥+A • doble clic en el logo.</div>
               </div>
