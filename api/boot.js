@@ -1,75 +1,64 @@
-// api/boot.js — inicializa/normaliza estado en KV
-export const config = { runtime: "nodejs" };
+// api/boot.js
+import { kv } from "@vercel/kv";
 
 const STATE_KEY = "coralclub:state";
-const REV_KEY   = "coralclub:rev";
+const REV_KEY = "coralclub:rev";
+
+const initialData = {
+  rev: 0,
+  brand: { name: "Coral Club", logoUrl: "/logo.png", logoSize: 42 },
+  background: { publicPath: "/Mapa.png" },
+  layout: { count: 20 },
+  payments: {
+    currency: "USD",
+    tentPrice: 10,
+    whatsapp: "",
+    mp: { link: "", alias: "" },
+    pagoMovil: { bank: "", rif: "", phone: "" },
+    zelle: { email: "", name: "" },
+  },
+  categories: [],
+  tents: [],
+  reservations: [],
+  logs: [],
+};
+
+function makeGrid(count = 20) {
+  const cols = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / cols);
+  const padX = 0.1,
+    padTop = 0.16,
+    padBottom = 0.1;
+  const usableW = 1 - padX * 2;
+  const usableH = 1 - padTop - padBottom;
+  return Array.from({ length: count }).map((_, i) => {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    const x = padX + ((c + 0.5) / cols) * usableW;
+    const y = padTop + ((r + 0.5) / rows) * usableH;
+    return { id: i + 1, state: "av", x: +x.toFixed(4), y: +y.toFixed(4) };
+  });
+}
 
 export default async function handler(req, res) {
-  const url   = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
-
-  if (!url || !token) {
-    return res.status(500).json({ ok:false, error:"Missing KV env vars" });
-  }
-
-  const baseUrl  = url.replace(/\/$/, "");
-  const head     = { headers: { Authorization: `Bearer ${token}` } };
-  const headJson = { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } };
-  const j = async (r) => { try { return await r.json(); } catch { return null; } };
-
-  // Estado inicial mínimo válido (puedes ajustar tentPrice default)
-  const initial = {
-    brand: { name: "Coral Club", logoUrl: "/logo.png", logoSize: 42 },
-    background: { publicPath: "/Mapa.png" },
-    layout: {},
-    payments: { currency: "USD", whatsapp: "", tentPrice: 10 },
-    categories: [],
-    tents: [],
-    reservations: [],
-    logs: [],
-    rev: 1,
-  };
-
   try {
-    // Reset opcional
-    const requestUrl = new URL(req.url, "https://dummy");
-    const isReset = requestUrl.searchParams.get("reset") === "1";
-    if (isReset) {
-      await fetch(`${baseUrl}/set/${encodeURIComponent(STATE_KEY)}`, {
-        method: "POST", ...headJson, body: JSON.stringify({ value: initial })
-      });
-      await fetch(`${baseUrl}/set/${encodeURIComponent(REV_KEY)}`, {
-        method: "POST", ...headJson, body: JSON.stringify({ value: 1 })
-      });
-      return res.status(200).json({ ok:true, state: initial, rev: 1, reset:true });
+    if (req.query.reset === "1") {
+      await kv.del(STATE_KEY);
+      await kv.del(REV_KEY);
     }
 
-    // Leer rev y state
-    let rev = await fetch(`${baseUrl}/get/${encodeURIComponent(REV_KEY)}`, head).then(j);
-    rev = (rev && rev.result && rev.result.value) ?? (rev && rev.result) ?? 0;
-
-    let state = await fetch(`${baseUrl}/get/${encodeURIComponent(STATE_KEY)}`, head).then(j);
-    state = (state && state.result && state.result.value) ?? (state && state.result) ?? null;
-
-    // Si vino como string, intenta parsear
-    if (typeof state === "string") {
-      try { state = JSON.parse(state); } catch {}
+    let state = await kv.get(STATE_KEY);
+    if (!state) {
+      const seeded = { ...initialData, tents: makeGrid(initialData.layout.count) };
+      await kv.set(STATE_KEY, seeded);
+      await kv.set(REV_KEY, 1);
+      return res.status(200).json({ ok: true, state: seeded, rev: 1 });
     }
 
-    // Seed si faltaba algo
-    if (!rev || !state) {
-      await fetch(`${baseUrl}/set/${encodeURIComponent(STATE_KEY)}`, {
-        method: "POST", ...headJson, body: JSON.stringify({ value: initial })
-      });
-      await fetch(`${baseUrl}/set/${encodeURIComponent(REV_KEY)}`, {
-        method: "POST", ...headJson, body: JSON.stringify({ value: 1 })
-      });
-      state = initial;
-      rev   = 1;
-    }
-
-    return res.status(200).json({ ok:true, state, rev });
+    const rev = (await kv.get(REV_KEY)) ?? 1;
+    return res.status(200).json({ ok: true, state, rev });
   } catch (e) {
-    return res.status(500).json({ ok:false, error: e?.message || String(e) });
+    console.error("boot error", e);
+    res.status(500).json({ ok: false, error: String(e) });
   }
 }
