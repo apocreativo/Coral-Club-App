@@ -1,15 +1,17 @@
 
-# Coral Club — Antibomba v4 (toggle KV)
-- UI/CSS intactos. Sin `/api` ni `@vercel/kv`.
-- `VITE_DISABLE_KV=1` para forzar modo **local** (descarta todo acceso a KV).
-- Console breadcrumbs para ver en qué paso falla si falla.
+# Coral Club — Final (con proxy /api/kv)
+- UI/CSS intactos (tu golden UI).
+- Multiusuario real con Vercel KV vía **proxy serverless** (no se expone el token).
+- Cliente llama a `/api/kv/...`; el servidor reenvía a Upstash.
 
-## Envs
-VITE_DISABLE_KV=0   # ó 1 para local
-VITE_KV_REST_API_URL=
-VITE_KV_REST_API_TOKEN=
-# VITE_KV_REST_NAMESPACE=
+## Variables (en Vercel → Project → Settings → Environment Variables)
+KV_REST_API_URL=   # tu REST URL (sin slash final)
+KV_REST_API_TOKEN= # tu REST token
 
-## Consejo
-Si el deploy falla: pon **VITE_DISABLE_KV=1** y redeploy. Confirmas que la UI queda estable.
-Luego vuelves a 0 y configuras URL/TOKEN correctos.
+## Scripts locales
+npm i
+npm run dev
+npm run build
+
+## Aceptación
+- Abre en 2 navegadores → mover/recibir, reservar/confirmar, Admin → Pagos (Precio del toldo).
