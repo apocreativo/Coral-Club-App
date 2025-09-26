@@ -1,29 +1,9 @@
 
-// Client-side KV helper that talks to our serverless proxy (/api/kv)
 const API_BASE = "/api/kv";
-
-async function safeJson(r){
-  try{ return await r.json(); }catch(_){ return null; }
-}
-export async function kvGet(key){
-  const r = await fetch(`${API_BASE}/get/${encodeURIComponent(key)}`);
-  const j = await safeJson(r);
-  return j?.result ?? null;
-}
-export async function kvSet(key, value){
-  const r = await fetch(`${API_BASE}/set/${encodeURIComponent(key)}`, {
-    method:"POST",
-    headers: { "Content-Type":"application/json" },
-    body: JSON.stringify({ value })
-  });
-  const j = await safeJson(r);
-  return j?.result ?? null;
-}
-export async function kvIncr(key){
-  const r = await fetch(`${API_BASE}/incr/${encodeURIComponent(key)}`, { method:"POST" });
-  const j = await safeJson(r);
-  return j?.result ?? 0;
-}
+async function safeJson(r){ try{ return await r.json(); }catch(_){ return null; } }
+export async function kvGet(key){ const r = await fetch(`${API_BASE}/get/${encodeURIComponent(key)}`); const j = await safeJson(r); return j?.result ?? null; }
+export async function kvSet(key, value){ const r = await fetch(`${API_BASE}/set/${encodeURIComponent(key)}`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ value }) }); const j = await safeJson(r); return j?.result ?? null; }
+export async function kvIncr(key){ const r = await fetch(`${API_BASE}/incr/${encodeURIComponent(key)}`, { method:"POST" }); const j = await safeJson(r); return j?.result ?? 0; }
 export async function kvMerge(stateKey, patch, revKey){
   const cur = await kvGet(stateKey);
   const next = cur ? { ...cur } : {};

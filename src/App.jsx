@@ -121,7 +121,7 @@ export default function App(){
 
   // compute totals
   const [cart, setCart] = useState([]);
-  const total = useMemo(() => (selectedTent ? (data.payments?.tentPrice||0) : 0) + cart.reduce((a,b)=> a + b.price*b.qty, 0), [cart, selectedTent, data.payments?.tentPrice]);
+  const total = useMemo(() => (selectedTent ? ((data.payments?.tentPrice)||0) : 0) + cart.reduce((a,b)=> a + b.price*b.qty, 0), [cart, selectedTent, data.payments?.tentPrice]);
   const resCode = useMemo(()=>{
     const d = new Date(); const s = d.toISOString().replace(/[-:T.Z]/g,"").slice(2,12);
     return `CC-${selectedTent?.id||"XX"}-${s}`;
@@ -145,7 +145,7 @@ export default function App(){
       const h = topbarRef.current.offsetHeight || 46;
       setTopInsetPx(12 + h + 12);
     }
-  }, [(data.brand?.logoSize ?? 42), (data.brand?.name || "")]);
+  }, [((data.brand||{}).logoSize ?? 42), ((data.brand||{}).name || "")]);
 
   // ===== Carga inicial desde KV (o seedea) =====
   useEffect(()=>{
@@ -290,11 +290,11 @@ export default function App(){
 
   // ===== WhatsApp =====
   const openWhatsApp = () => {
-    const num = ((data.payments?.whatsapp || "") || "").replace(/[^0-9]/g, "");
+    const num = (((data.payments||{}).whatsapp || "") || "").replace(/[^0-9]/g, "");
     if(!num) return alert("Configura el número de WhatsApp en Admin → Pagos");
     if(!selectedTent) return alert("Selecciona un toldo disponible primero");
     if(!userForm.name || !userForm.phone){ alert("Completa tu nombre y teléfono."); return; }
-    const cur = (data.payments?.currency || "USD") || "USD";
+    const cur = ((data.payments||{}).currency || "USD") || "USD";
     const extrasLines = cart.length
       ? cart.map(x=> `• ${x.name} x${x.qty} — ${cur} ${(x.price * x.qty).toFixed(2)}`).join("\n")
       : "• Sin extras";
@@ -363,8 +363,8 @@ const cleanupExpired = async () => {
 usePolling(cleanupExpired, 20000);
 }, []);
 
-  const bustLogo = `${(data.brand?.logoUrl || "/logo.png") || "/logo.png"}?v=${sessionRevParam}`;
-  const bustMap  = `${(data.background?.publicPath || "/Mapa.png") || "/Mapa.png"}?v=${sessionRevParam}`;
+  const bustLogo = `${((data.brand||{}).logoUrl || "/logo.png") || "/logo.png"}?v=${sessionRevParam}`;
+  const bustMap  = `${((data.background||{}).publicPath || "/Mapa.png") || "/Mapa.png"}?v=${sessionRevParam}`;
 
   return (
     <div className="app-shell" onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
@@ -376,12 +376,12 @@ usePolling(cleanupExpired, 20000);
           <img
             src={bustLogo}
             alt="logo"
-            width={(data.brand?.logoSize ?? 42)} height={(data.brand?.logoSize ?? 42)}
+            width={((data.brand||{}).logoSize ?? 42)} height={((data.brand||{}).logoSize ?? 42)}
             style={{ objectFit:"contain", borderRadius:12, filter:"drop-shadow(0 1px 2px rgba(0,0,0,.5))" }}
             onDoubleClick={()=>{ setAdminOpen(true); setAuthed(false); }}
             onError={(e)=>{ e.currentTarget.src = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='100%' height='100%' fill='%23131a22'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' fill='%23cbd5e1' font-size='10'>LOGO</text></svg>`; }}
           />
-          <div className="brand">{(data.brand?.name || "")}</div>
+          <div className="brand">{((data.brand||{}).name || "")}</div>
           <div className="spacer" />
           {/* Leyenda */}
           <div className="legend" style={{ top: `${topInsetPx}px` }}>
@@ -497,7 +497,7 @@ usePolling(cleanupExpired, 20000);
             </div>
             <div className="sheet-footer">
               <button className="btn" onClick={()=> setSheetTab(sheetTab==="carrito" ? "extras" : "carrito")}>Ir a {sheetTab==="carrito" ? "Extras" : "Carrito"}</button>
-              <div className="total">Total: {(data.payments?.currency || "USD")} {total.toFixed(2)}</div>
+              <div className="total">Total: {((data.payments||{}).currency || "USD")} {total.toFixed(2)}</div>
               <button className="btn primary" disabled={!selectedTent} title={!selectedTent ? "Primero selecciona un toldo" : ""} onClick={reservar}>Reservar</button>
             </div>
           </div>
@@ -621,18 +621,18 @@ usePolling(cleanupExpired, 20000);
                   <div>
                     <div className="grid2">
                       <label><div>Nombre de marca</div>
-                        <input className="input" value={(data.brand?.name || "")} onChange={(e)=> onChangeBrandName(e.target.value)} />
+                        <input className="input" value={((data.brand||{}).name || "")} onChange={(e)=> onChangeBrandName(e.target.value)} />
                       </label>
                       <label><div>Tamaño del logo</div>
-                        <input className="input" type="number" min={24} max={120} value={(data.brand?.logoSize ?? 42)} onChange={(e)=> onChangeLogoSize(Math.max(24, Math.min(120, parseInt(e.target.value||"40"))))} />
+                        <input className="input" type="number" min={24} max={120} value={((data.brand||{}).logoSize ?? 42)} onChange={(e)=> onChangeLogoSize(Math.max(24, Math.min(120, parseInt(e.target.value||"40"))))} />
                       </label>
                     </div>
                     <div className="grid2" style={{ marginTop:8 }}>
                       <label><div>Logo – ruta pública</div>
-                        <input className="input" placeholder="/logo.png" value={(data.brand?.logoUrl || "/logo.png")} onChange={(e)=> onChangeLogoUrl(e.target.value)} />
+                        <input className="input" placeholder="/logo.png" value={((data.brand||{}).logoUrl || "/logo.png")} onChange={(e)=> onChangeLogoUrl(e.target.value)} />
                       </label>
                       <label><div>Fondo – ruta pública</div>
-                        <input className="input" placeholder="/Mapa.png" value={(data.background?.publicPath || "/Mapa.png")} onChange={(e)=> onChangeBgPath(e.target.value)} />
+                        <input className="input" placeholder="/Mapa.png" value={((data.background||{}).publicPath || "/Mapa.png")} onChange={(e)=> onChangeBgPath(e.target.value)} />
                       </label>
                     </div>
                   </div>
@@ -665,43 +665,43 @@ usePolling(cleanupExpired, 20000);
                   <div>
                     <div className="grid2">
                       <label><div>Moneda</div>
-                        <input className="input" value={(data.payments?.currency || "USD")} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
+                        <input className="input" value={((data.payments||{}).currency || "USD")} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
                       </label>
                       <label><div>WhatsApp (Ejem 58412...)</div>
-                        <input className="input" value={(data.payments?.whatsapp || "")} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
+                        <input className="input" value={((data.payments||{}).whatsapp || "")} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
                       </label>
                     </div>
                     <div className="hr"></div>
                     <div className="title">Mercado Pago</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Link de pago</div>
-                        <input className="input" placeholder="https://..." value={(data.payments?.mp || {}).link} onChange={(e)=> onChangePayments({ mp: { ...(data.payments?.mp || {}), link:e.target.value } })} />
+                        <input className="input" placeholder="https://..." value={(data.payments||{}).mp.link} onChange={(e)=> onChangePayments({ mp: { ...(data.payments||{}).mp, link:e.target.value } })} />
                       </label>
                       <label><div>Alias / Comentario</div>
-                        <input className="input" value={(data.payments?.mp || {}).alias} onChange={(e)=> onChangePayments({ mp: { ...(data.payments?.mp || {}), alias:e.target.value } })} />
+                        <input className="input" value={(data.payments||{}).mp.alias} onChange={(e)=> onChangePayments({ mp: { ...(data.payments||{}).mp, alias:e.target.value } })} />
                       </label>
                     </div>
                     <div className="hr"></div>
                     <div className="title">Pago Móvil</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Banco</div>
-                        <input className="input" value={(data.payments?.pagoMovil || {}).bank} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data.payments?.pagoMovil || {}), bank:e.target.value } })} />
+                        <input className="input" value={(data.payments||{}).pagoMovil.bank} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data.payments||{}).pagoMovil, bank:e.target.value } })} />
                       </label>
                       <label><div>RIF / CI</div>
-                        <input className="input" value={(data.payments?.pagoMovil || {}).rif} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data.payments?.pagoMovil || {}), rif:e.target.value } })} />
+                        <input className="input" value={(data.payments||{}).pagoMovil.rif} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data.payments||{}).pagoMovil, rif:e.target.value } })} />
                       </label>
                       <label><div>Teléfono</div>
-                        <input className="input" value={(data.payments?.pagoMovil || {}).phone} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data.payments?.pagoMovil || {}), phone:e.target.value } })} />
+                        <input className="input" value={(data.payments||{}).pagoMovil.phone} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data.payments||{}).pagoMovil, phone:e.target.value } })} />
                       </label>
                     </div>
                     <div className="hr"></div>
                     <div className="title">Zelle</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Email</div>
-                        <input className="input" value={(data.payments?.zelle || {}).email} onChange={(e)=> onChangePayments({ zelle: { ...(data.payments?.zelle || {}), email:e.target.value } })} />
+                        <input className="input" value={(data.payments||{}).zelle.email} onChange={(e)=> onChangePayments({ zelle: { ...(data.payments||{}).zelle, email:e.target.value } })} />
                       </label>
                       <label><div>Nombre</div>
-                        <input className="input" value={(data.payments?.zelle || {}).name} onChange={(e)=> onChangePayments({ zelle: { ...(data.payments?.zelle || {}), name:e.target.value } })} />
+                        <input className="input" value={(data.payments||{}).zelle.name} onChange={(e)=> onChangePayments({ zelle: { ...(data.payments||{}).zelle, name:e.target.value } })} />
                       </label>
                     </div>
                   </div>
@@ -795,7 +795,7 @@ usePolling(cleanupExpired, 20000);
               </div>
 
               <div className="hint" style={{ marginTop:6 }}>
-                Código: <b>{resCode}</b> — Toldo #{selectedTent?.id} — Total: {(data.payments?.currency || "USD")} {total.toFixed(2)}
+                Código: <b>{resCode}</b> — Toldo #{selectedTent?.id} — Total: {((data.payments||{}).currency || "USD")} {total.toFixed(2)}
               </div>
 
               <div className="item" style={{ marginTop:8 }}>
@@ -852,8 +852,8 @@ usePolling(cleanupExpired, 20000);
                   <div className="title">Mercado Pago</div>
                   <div className="hint">Usa tu link de pago o alias configurado.</div>
                   <div className="row" style={{ marginTop:8 }}>
-                    <input className="input" readOnly value={(data.payments?.mp || {}).link || (data.payments?.mp || {}).alias || "(Configura en Admin → Pagos)"} />
-                    {(data.payments?.mp || {}).link && (<a className="btn" href={(data.payments?.mp || {}).link} target="_blank" rel="noreferrer">Abrir</a>)}
+                    <input className="input" readOnly value={(data.payments||{}).mp.link || (data.payments||{}).mp.alias || "(Configura en Admin → Pagos)"} />
+                    {(data.payments||{}).mp.link && (<a className="btn" href={(data.payments||{}).mp.link} target="_blank" rel="noreferrer">Abrir</a>)}
                   </div>
                 </div>
               )}
@@ -862,16 +862,16 @@ usePolling(cleanupExpired, 20000);
                 <div className="item" style={{ marginTop:8 }}>
                   <div className="title">Pago Móvil</div>
                   <div className="row" style={{ marginTop:6 }}>
-                    <div className="grow">Banco: <b>{(data.payments?.pagoMovil || {}).bank || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments?.pagoMovil || {}).bank || "")}>Copiar</button>
+                    <div className="grow">Banco: <b>{(data.payments||{}).pagoMovil.bank || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments||{}).pagoMovil.bank || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">RIF/CI: <b>{(data.payments?.pagoMovil || {}).rif || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments?.pagoMovil || {}).rif || "")}>Copiar</button>
+                    <div className="grow">RIF/CI: <b>{(data.payments||{}).pagoMovil.rif || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments||{}).pagoMovil.rif || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">Teléfono: <b>{(data.payments?.pagoMovil || {}).phone || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments?.pagoMovil || {}).phone || "")}>Copiar</button>
+                    <div className="grow">Teléfono: <b>{(data.payments||{}).pagoMovil.phone || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments||{}).pagoMovil.phone || "")}>Copiar</button>
                   </div>
                 </div>
               )}
@@ -880,12 +880,12 @@ usePolling(cleanupExpired, 20000);
                 <div className="item" style={{ marginTop:8 }}>
                   <div className="title">Zelle</div>
                   <div className="row" style={{ marginTop:6 }}>
-                    <div className="grow">Email: <b>{(data.payments?.zelle || {}).email || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments?.zelle || {}).email || "")}>Copiar</button>
+                    <div className="grow">Email: <b>{(data.payments||{}).zelle.email || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments||{}).zelle.email || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">Nombre: <b>{(data.payments?.zelle || {}).name || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments?.zelle || {}).name || "")}>Copiar</button>
+                    <div className="grow">Nombre: <b>{(data.payments||{}).zelle.name || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText((data.payments||{}).zelle.name || "")}>Copiar</button>
                   </div>
                 </div>
               )}
