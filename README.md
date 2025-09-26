@@ -1,18 +1,14 @@
 
-# Coral Club — Final 100% KV (con proxy /api/kv)
-- UI/CSS intactos (tu golden UI).
-- Multiusuario real con Vercel KV, sin exponer tokens (proxy serverless).
-- Cliente usa `/api/kv/...` → el servidor reenvía a Upstash.
+# Coral Club — Final Guarded (100% KV + proxy /api/kv)
+- UI/CSS intactos.
+- Multiusuario con Vercel KV (vía proxy serverless).
+- Guards robustos para brand/background/payments para evitar errores en el primer render.
 
-## Variables (en Vercel → Project → Settings → Environment Variables)
-KV_REST_API_URL=   # REST URL de Upstash/Vercel KV (sin slash final)
-KV_REST_API_TOKEN= # REST Token
+## Variables en Vercel
+KV_REST_API_URL= (sin slash final)
+KV_REST_API_TOKEN=
 
-## Scripts locales
+## Scripts
 npm i
 npm run dev
 npm run build
-
-## Pruebas de aceptación
-- Abrir en 2 navegadores (mover toldo, reservar/confirmar/cancelar).
-- Admin → Pagos: "Precio del toldo" (autosave).
