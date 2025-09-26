@@ -1,5 +1,5 @@
 
-// Client-side KV helper that talks to our serverless proxy (no tokens exposed)
+// Client-side KV helper that talks to our serverless proxy (/api/kv)
 const API_BASE = "/api/kv";
 
 async function safeJson(r){
@@ -25,7 +25,6 @@ export async function kvIncr(key){
   return j?.result ?? 0;
 }
 export async function kvMerge(stateKey, patch, revKey){
-  // Simple shallow merge on server via set+incr sequence (done from client in this version)
   const cur = await kvGet(stateKey);
   const next = cur ? { ...cur } : {};
   for(const [k,v] of Object.entries(patch||{})){

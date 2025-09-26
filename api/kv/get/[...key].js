@@ -1,6 +1,6 @@
 export const config = { runtime: 'nodejs20.x' };
 
-function base(res){
+function ctxOr500(res){
   const url = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
   if(!url || !token){
@@ -11,10 +11,10 @@ function base(res){
 }
 
 export default async function handler(req, res){
-  const ctx = base(res); if(!ctx) return;
-  const key = (req.query.key || req.query.path || req.query['...key'] || []).join ? (req.query['...key']||[]) : [req.query.key];
-  const k = Array.isArray(key) ? key.join('/') : String(key||'');
-  const upstream = await fetch(`${ctx.url}/get/${encodeURIComponent(k)}`, {
+  const ctx = ctxOr500(res); if(!ctx) return;
+  const parts = req.query['...key'] || [];
+  const key = Array.isArray(parts) ? parts.join('/') : String(parts||'');
+  const upstream = await fetch(`${ctx.url}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${ctx.token}` }
   });
   const data = await upstream.json().catch(()=>({}));

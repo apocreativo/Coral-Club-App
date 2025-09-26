@@ -1,6 +1,6 @@
 export const config = { runtime: 'nodejs20.x' };
 
-function base(res){
+function ctxOr500(res){
   const url = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
   if(!url || !token){
@@ -11,8 +11,9 @@ function base(res){
 }
 
 export default async function handler(req, res){
-  const ctx = base(res); if(!ctx) return;
-  const key = (req.query['...key']||[]).join('/');
+  const ctx = ctxOr500(res); if(!ctx) return;
+  const parts = req.query['...key'] || [];
+  const key = Array.isArray(parts) ? parts.join('/') : String(parts||'');
   const body = typeof req.body === 'object' ? req.body : {};
   const upstream = await fetch(`${ctx.url}/set/${encodeURIComponent(key)}`, {
     method: 'POST',
