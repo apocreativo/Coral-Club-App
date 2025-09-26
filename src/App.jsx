@@ -510,7 +510,18 @@ export default function App(){
 
         {/* ADMIN */}
         {adminOpen && (
-          <div className="overlay" onClick={(e)=>{ if(e.target===e.currentTarget) setAdminOpen(false); }}>
+          <div
+            className="overlay"
+            // iPad: evitar que un “tap fantasma” cierre el modal mientras se ingresa el PIN
+            onMouseDown={(e) => {
+              if (!authed) return; // no cerrar mientras estás en el diálogo de PIN
+              if (e.target === e.currentTarget) setAdminOpen(false);
+            }}
+            onTouchStart={(e) => {
+              if (!authed) return;
+              if (e.target === e.currentTarget) setAdminOpen(false);
+            }}
+          >
             {!authed ? (
               <div className="modal">
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
