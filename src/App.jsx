@@ -81,7 +81,7 @@ const throttle = (fn, ms=250) => {
 };
 
 function usePolling(onTick, delay=1500){
-  useEffect(()=>{
+  useEffect(()=>{ console.log('[App] mount');
     let id = setInterval(onTick, delay);
     return ()=> clearInterval(id);
   }, [onTick, delay]);
@@ -128,7 +128,7 @@ export default function App(){
   }, [selectedTent]);
 
   // top inset dynamic
-  useEffect(()=>{
+  useEffect(()=>{ console.log('[App] mount');
     if(!topbarRef.current) return;
     const el = topbarRef.current;
     const ro = new ResizeObserver((entries)=>{
@@ -140,7 +140,7 @@ export default function App(){
     ro.observe(el);
     return ()=> ro.disconnect();
   }, []);
-  useEffect(()=>{
+  useEffect(()=>{ console.log('[App] mount');
     if(topbarRef.current){
       const h = topbarRef.current.offsetHeight || 46;
       setTopInsetPx(12 + h + 12);
@@ -148,7 +148,7 @@ export default function App(){
   }, [(data.brand?.logoSize ?? 42), data.brand.name]);
 
   // ===== Carga inicial desde KV (o seedea) =====
-  useEffect(()=>{
+  useEffect(()=>{ console.log('[App] mount');
     (async ()=>{
       try{
         const cur = await kvGet(STATE_KEY);
@@ -173,6 +173,7 @@ export default function App(){
   }, []);
 
   // ===== Polling de rev =====
+  console.log('[App] start polling REV');
   usePolling(async ()=>{
     try{
       const r = await kvGet(REV_KEY);
@@ -188,7 +189,7 @@ export default function App(){
   }, 1500);
 
   // ===== Expiración de reservas pendientes =====
-  useEffect(()=>{
+  useEffect(()=>{ console.log('[App] mount');
     const id = setInterval(async ()=>{
       const now = nowISO();
       const expired = data.reservations.filter(r => r.status==="pending" && r.expiresAt && r.expiresAt <= now);
@@ -339,7 +340,7 @@ export default function App(){
   };
 
   // Hotkeys
-  useEffect(()=>{
+  useEffect(()=>{ console.log('[App] mount');
     const onKey = (e)=>{
       if((e.key==="a"||e.key==="A") && (e.altKey||e.metaKey)){ setAdminOpen(true); setAuthed(false); }
     };

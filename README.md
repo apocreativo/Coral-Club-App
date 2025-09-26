@@ -1,10 +1,15 @@
 
-# Coral Club — Antibomba v3 (con sourcemaps)
-- UI/CSS intactos.
-- Guards adicionales para propiedades anidadas.
-- Build con `sourcemap: true` y `minify: false` → los errores mostrarán líneas reales.
+# Coral Club — Antibomba v4 (toggle KV)
+- UI/CSS intactos. Sin `/api` ni `@vercel/kv`.
+- `VITE_DISABLE_KV=1` para forzar modo **local** (descarta todo acceso a KV).
+- Console breadcrumbs para ver en qué paso falla si falla.
 
-## Pasos
-- Sube a GitHub, deploy en Vercel.
-- Configura `VITE_KV_REST_API_URL` y `VITE_KV_REST_API_TOKEN` (y opcional `VITE_KV_REST_NAMESPACE`).
-- Si hay error, el overlay + sourcemaps te dirán el archivo/línea exacta.
+## Envs
+VITE_DISABLE_KV=0   # ó 1 para local
+VITE_KV_REST_API_URL=
+VITE_KV_REST_API_TOKEN=
+# VITE_KV_REST_NAMESPACE=
+
+## Consejo
+Si el deploy falla: pon **VITE_DISABLE_KV=1** y redeploy. Confirmas que la UI queda estable.
+Luego vuelves a 0 y configuras URL/TOKEN correctos.
