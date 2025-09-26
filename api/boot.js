@@ -1,0 +1,22 @@
+export const config = { runtime: 'nodejs' };
+function ctxOr500(res){ const url=process.env.KV_REST_API_URL, token=process.env.KV_REST_API_TOKEN;
+  if(!url||!token){ res.status(500).json({ ok:false, error:"Missing KV_REST_API_URL or KV_REST_API_TOKEN" }); return null; }
+  return { url:url.replace(/\/$/, ''), token };
+}
+const STATE_KEY="coralclub:state", REV_KEY="coralclub:rev";
+const initial={ brand:{name:"Coral Club",logoUrl:"/logo.png",logoSize:42}, background:{publicPath:"/Mapa.png"}, layout:{},
+  payments:{currency:"USD",tentPrice:0,whatsapp:""}, categories:[], tents:[], reservations:[], logs:[], rev:1 };
+export default async function handler(req,res){
+  const ctx=ctxOr500(res); if(!ctx) return;
+  const head={ headers:{ Authorization:`Bearer ${ctx.token}` } };
+  const headJson={ headers:{ Authorization:`Bearer ${ctx.token}`,'Content-Type':'application/json' } };
+  const j = async r => { try{ return await r.json(); }catch(_){ return null; } };
+  let rev = await fetch(`${ctx.url}/get/${encodeURIComponent(REV_KEY)}`, head).then(j); rev=(rev&&rev.result)||0;
+  let state = await fetch(`${ctx.url}/get/${encodeURIComponent(STATE_KEY)}`, head).then(j); state=state&&state.result;
+  if(!state){
+    await fetch(`${ctx.url}/set/${encodeURIComponent(STATE_KEY)}`, { method:'POST', ...headJson, body: JSON.stringify({ value: initial }) });
+    await fetch(`${ctx.url}/set/${encodeURIComponent(REV_KEY)}`, { method:'POST', ...headJson, body: JSON.stringify({ value: 1 }) });
+    state=initial; rev=1;
+  }
+  res.status(200).json({ ok:true, state, rev });
+}
