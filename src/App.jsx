@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+
+/* polyfills */
+if (typeof crypto !== "undefined" && !crypto.randomUUID) { crypto.randomUUID = () => Math.random().toString(36).slice(2) + Date.now().toString(36); }
+
 import { kvGet, kvSet, kvIncr, kvMerge } from "./useKV";
 
 // ===== Claves en KV =====
