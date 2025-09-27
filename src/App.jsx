@@ -79,7 +79,7 @@ const throttle = (fn, ms=250) => {
 
 function usePolling(onTick, delay=1500){
   useEffect(()=>{
-    let id = setInterval(onTick, delay);
+    const id = setInterval(onTick, delay);
     return ()=> clearInterval(id);
   }, [onTick, delay]);
 }
@@ -127,12 +127,13 @@ export default function App(){
   const [data, setData] = useState(initialData);
   const [rev, setRev] = useState(0);
   const [loaded, setLoaded] = useState(false);
-  const [kvDegraded, setKvDegraded] = useState(false); // 💡 si KV falla, no bloquea UI
-  // debajo de: const [kvDegraded, setKvDegraded] = useState(false);
+  const [kvDegraded, setKvDegraded] = useState(false);
+
+  // Backoff para polling (multiusuario robusto)
   const [pollMs, setPollMs] = useState(1500);
   const failRef = useRef(0);
   const lastSeenRevRef = useRef(0);
-  
+
   // UI
   const [adminOpen, setAdminOpen] = useState(false);
   const [authed, setAuthed] = useState(false);
@@ -195,7 +196,7 @@ export default function App(){
     }
   }, [data.brand.logoSize, data.brand.name]);
 
-  // ===== Carga inicial desde KV (sin bucles) =====
+  // ===== Carga inicial desde KV =====
   const initOnce = useRef(false);
   useEffect(()=>{
     if (initOnce.current) return;
@@ -229,57 +230,49 @@ export default function App(){
     })();
   }, []);
 
-    // ===== Polling de rev: nunca se detiene; usa backoff si KV falla =====
-    usePolling(async () => {
-      try {
-        const newRev = await kvGet(REV_KEY);
+  // ===== Polling de rev: nunca se detiene; backoff si KV falla =====
+  usePolling(async () => {
+    try {
+      const newRev = await kvGet(REV_KEY);
 
-        // Si KV no devolvió número válido, tratamos como fallo leve
-        if (typeof newRev !== "number") throw new Error("REV_KEY inválido");
+      if (typeof newRev !== "number") throw new Error("REV_KEY inválido");
 
-        // KV respondió: reset de degradación y backoff
-        if (kvDegraded) setKvDegraded(false);
-        if (pollMs !== 1500) setPollMs(1500);
-        failRef.current = 0;
+      // KV respondió: reset
+      if (kvDegraded) setKvDegraded(false);
+      if (pollMs !== 1500) setPollMs(1500);
+      failRef.current = 0;
 
-        // Si hay rev nuevo, trae estado y aplica
-        if (newRev !== rev) {
-          const s = await kvGet(STATE_KEY);
-          if (s) {
-            setData((prev) => (JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
-          }
-          setRev(newRev);
-          setSessionRevParam(String(newRev));
-          lastSeenRevRef.current = newRev;
+      // Si hay rev nuevo, trae estado y aplica
+      if (newRev !== rev) {
+        const s = await kvGet(STATE_KEY);
+        if (s) {
+          setData((prev) => (JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
         }
-      } catch (err) {
-        // Falla de KV: marcamos degradado pero NO paramos el polling.
-        if (!kvDegraded) setKvDegraded(true);
-
-        // Backoff exponencial suave hasta 10s
-        failRef.current = Math.min(failRef.current + 1, 4); // 1.5s, 3s, 6s, 10s
-        const next = [1500, 3000, 6000, 10000][failRef.current] || 10000;
-        if (pollMs !== next) setPollMs(next);
+        setRev(newRev);
+        setSessionRevParam(String(newRev));
+        lastSeenRevRef.current = newRev;
       }
-    }, pollMs);
+    } catch (err) {
+      if (!kvDegraded) setKvDegraded(true);
+      failRef.current = Math.min(failRef.current + 1, 4); // 1.5s,3s,6s,10s
+      const next = [1500, 3000, 6000, 10000][failRef.current] || 10000;
+      if (pollMs !== next) setPollMs(next);
+    }
+  }, pollMs);
 
-  // ===== Pull completo de estado cada 8s como respaldo del REV_KEY =====
+  // ===== Pull completo de estado cada 8s como respaldo =====
   usePolling(async () => {
     try {
       const s = await kvGet(STATE_KEY);
-    if (s && !deepEqual(s, data)) {
+      if (s && !deepEqual(s, data)) {
         setData(s);
       }
-      // si vuelve KV, salimos de degradado
       if (kvDegraded) setKvDegraded(false);
-    } catch (e) {
-      // si falla, no pasa nada: seguimos en modo degradado
+    } catch {
+      // seguimos en degradado si falla
     }
   }, 8000);
 
-
-
-  
   // ===== Expiración de reservas pendientes =====
   useEffect(()=>{
     const id = setInterval(async ()=>{
@@ -294,7 +287,14 @@ export default function App(){
         });
         const resUpd = data.reservations.map(r=> expired.some(x=>x.id===r.id) ? { ...r, status:"expired" } : r);
 
+        await mergeState({ tents: tentsUpd, reservations: resUpd }, "Expirar pendientes");
+        logEvent(setData, "system", `Expiraron ${expired.length} reservas`);
+      }
+    }, 10000);
+    return ()=> clearInterval(id);
+  }, [loaded, data.reservations, data.tents]);
 
+  // ===== Resync al volver a la pestaña =====
   useEffect(() => {
     const onVis = async () => {
       if (document.visibilityState !== "visible") return;
@@ -312,54 +312,37 @@ export default function App(){
         setKvDegraded(true);
       }
     };
-  document.addEventListener("visibilitychange", onVis);
-  return () => document.removeEventListener("visibilitychange", onVis);
-}, [kvDegraded]);
-        // Optimista local
-        setData(s => ({ ...s, tents: tentsUpd, reservations: resUpd }));
-        try {
-          await kvMerge(STATE_KEY, { tents: tentsUpd, reservations: resUpd }, REV_KEY);
-          if (kvDegraded) setKvDegraded(false);
-        } catch {
-          setKvDegraded(true);
-        }
-        logEvent(setData, "system", `Expiraron ${expired.length} reservas`);
-      }
-    }, 10000);
-    return ()=> clearInterval(id);
-  }, [loaded, data.reservations, data.tents, kvDegraded]);
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [kvDegraded]);
 
   // ===== Auto-rellenar toldos si llegaron vacíos =====
   useEffect(() => {
     if (!loaded) return;
     if (!Array.isArray(data.tents) || data.tents.length === 0) {
       const tents = makeGrid(data?.layout?.count || 20);
-      setData((s) => ({ ...s, tents })); // optimista
+      // persistimos con mergeState (sube rev interno)
       (async () => {
-        try {
-          await kvMerge(STATE_KEY, { tents }, REV_KEY);
-          if (kvDegraded) setKvDegraded(false);
-        } catch {
-          setKvDegraded(true);
-        }
+        await mergeState({ tents }, "Auto-relleno de toldos");
       })();
     }
-  }, [loaded, data?.layout?.count, kvDegraded]);
+  }, [loaded, data?.layout?.count]);
 
-  // ===== Helpers de merge (optimista + KV tolerante) =====
+  // ===== Helpers de merge (optimista + KV tolerante + rev interno) =====
   const mergeState = async (patch, logMsg) => {
-    // Calcula rev embebido (monótono)
     const nextRevInState = (Number(data?.rev) || 0) + 1;
 
-    // 1) Optimista local
-    setData((s) => localMerge(s, { ...patch, rev: nextRevInState }));
+    // 1) Optimista local + rev interno
+    setData((s) => {
+      const withRev = { ...patch, rev: nextRevInState };
+      return localMerge(s, withRev);
+    });
     if (logMsg) logEvent(setData, "action", logMsg);
 
-    // 2) Persistencia a KV (no bloquea)
+    // 2) Persistencia (no bloquea)
     try {
       const next = await kvMerge(STATE_KEY, { ...patch, rev: nextRevInState }, REV_KEY);
       setData(next);
-      // intentamos leer REV_KEY; si falla no importa (tenemos rev interno)
       try {
         const r = await kvGet(REV_KEY);
         if (typeof r === "number") {
@@ -429,16 +412,8 @@ export default function App(){
     const tentsUpd = data.tents.map(x=> x.id===t.id ? { ...x, state:"pr" } : x);
     const reservationsUpd = [reservation, ...data.reservations];
 
-    // Optimista
-    setData(s => ({ ...s, tents: tentsUpd, reservations: reservationsUpd }));
-    try{
-      await kvMerge(STATE_KEY, { tents: tentsUpd, reservations: reservationsUpd }, REV_KEY);
-      const r = await kvGet(REV_KEY);
-      setRev(r || 0); setSessionRevParam(String(r || 0));
-      if (kvDegraded) setKvDegraded(false);
-    }catch{
-      setKvDegraded(true);
-    }
+    // Persistir por mergeState (rev interno + INCR best-effort)
+    await mergeState({ tents: tentsUpd, reservations: reservationsUpd }, `Reserva creada toldo #${t.id}`);
     setMyPendingResId(reservation.id);
     setPayOpen(true);
   }
@@ -446,14 +421,7 @@ export default function App(){
   async function releaseTent(tentId, resId, toState="av", newStatus="expired"){
     const tentsUpd = data.tents.map(t=> t.id===tentId ? { ...t, state: toState } : t);
     const resUpd = data.reservations.map(r=> r.id===resId ? { ...r, status:newStatus } : r);
-
-    setData(s => ({ ...s, tents: tentsUpd, reservations: resUpd }));
-    try{
-      await kvMerge(STATE_KEY, { tents: tentsUpd, reservations: resUpd }, REV_KEY);
-      if (kvDegraded) setKvDegraded(false);
-    }catch{
-      setKvDegraded(true);
-    }
+    await mergeState({ tents: tentsUpd, reservations: resUpd }, `Liberar toldo #${tentId}`);
     if(myPendingResId===resId) setMyPendingResId(null);
     if(selectedTent?.id===tentId && toState!=="pr") setSelectedTent(null);
   }
@@ -461,14 +429,7 @@ export default function App(){
   async function confirmPaid(tentId, resId){
     const tentsUpd = data.tents.map(t=> t.id===tentId ? { ...t, state:"oc" } : t);
     const resUpd = data.reservations.map(r=> r.id===resId ? { ...r, status:"paid" } : r);
-
-    setData(s => ({ ...s, tents: tentsUpd, reservations: resUpd }));
-    try{
-      await kvMerge(STATE_KEY, { tents: tentsUpd, reservations: resUpd }, REV_KEY);
-      if (kvDegraded) setKvDegraded(false);
-    }catch{
-      setKvDegraded(true);
-    }
+    await mergeState({ tents: tentsUpd, reservations: resUpd }, `Pago confirmado #${tentId}`);
     if(myPendingResId===resId) setMyPendingResId(null);
   }
 
@@ -516,20 +477,10 @@ export default function App(){
   const onChangeBgPath  = async (v)=> mergeState({ background: { ...data.background, publicPath: v } }, "Editar fondo");
   const onChangePayments = async (patch)=> mergeState({ payments: { ...data.payments, ...patch } }, "Editar pagos");
 
-  // Seed grid / Regenerar (con fallback local)
+  // Seed grid / Regenerar (persistente)
   const regenGrid = async ()=>{
     const tents = makeGrid(data.layout.count || 20);
-    setData(s => ({ ...s, tents })); // optimista
-    try {
-      await kvMerge(STATE_KEY, { tents }, REV_KEY);
-      const r = await kvGet(REV_KEY);
-      setRev(r || 0);
-      setSessionRevParam(String(r || 0));
-      if (kvDegraded) setKvDegraded(false);
-    } catch (e) {
-      console.warn("KV fuera, rejilla aplicada solo local:", e);
-      setKvDegraded(true);
-    }
+    await mergeState({ tents }, "Regenerar grilla");
   };
 
   // Hotkeys
@@ -949,7 +900,9 @@ export default function App(){
                       <div className="item" style={{ marginTop:10 }}>
                         <div className="title">Reserva pendiente del toldo #{selectedTent.id}</div>
                         {(()=>{
-                          const pending = data.reservations.filter(r=> r.tentId===selectedTent.id && r.status==="pending").sort((a,b)=> a.createdAt>b.createdAt?-1:1)[0];
+                          const pending = data.reservations
+                            .filter(r=> r.tentId===selectedTent.id && r.status==="pending")
+                            .sort((a,b)=> a.createdAt>b.createdAt?-1:1)[0];
                           if(!pending) return <div className="hint">No hay reservas pendientes.</div>;
                           return (
                             <>
