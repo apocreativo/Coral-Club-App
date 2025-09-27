@@ -128,7 +128,11 @@ export default function App(){
   const [rev, setRev] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [kvDegraded, setKvDegraded] = useState(false); // 💡 si KV falla, no bloquea UI
-
+  // debajo de: const [kvDegraded, setKvDegraded] = useState(false);
+  const [pollMs, setPollMs] = useState(1500);
+  const failRef = useRef(0);
+  const lastSeenRevRef = useRef(0);
+  
   // UI
   const [adminOpen, setAdminOpen] = useState(false);
   const [authed, setAuthed] = useState(false);
@@ -225,22 +229,39 @@ export default function App(){
     })();
   }, []);
 
-  // ===== Polling de rev (si KV ok, sin marear UI) =====
-  usePolling(async ()=>{
-    if (kvDegraded) return; // si KV está mal, no forzar
-    try{
-      const newRev = await kvGet(REV_KEY);
-      if (typeof newRev !== "number" || newRev === rev) return;
-      const s = await kvGet(STATE_KEY);
-      if (s && !deepEqual(s, data)) {
-        setData(s);
+    // ===== Polling de rev: nunca se detiene; usa backoff si KV falla =====
+    usePolling(async () => {
+      try {
+        const newRev = await kvGet(REV_KEY);
+
+        // Si KV no devolvió número válido, tratamos como fallo leve
+        if (typeof newRev !== "number") throw new Error("REV_KEY inválido");
+
+        // KV respondió: reset de degradación y backoff
+        if (kvDegraded) setKvDegraded(false);
+        if (pollMs !== 1500) setPollMs(1500);
+        failRef.current = 0;
+
+        // Si hay rev nuevo, trae estado y aplica
+        if (newRev !== rev) {
+          const s = await kvGet(STATE_KEY);
+          if (s) {
+            setData((prev) => (JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
+          }
+          setRev(newRev);
+          setSessionRevParam(String(newRev));
+          lastSeenRevRef.current = newRev;
+        }
+      } catch (err) {
+        // Falla de KV: marcamos degradado pero NO paramos el polling.
+        if (!kvDegraded) setKvDegraded(true);
+
+        // Backoff exponencial suave hasta 10s
+        failRef.current = Math.min(failRef.current + 1, 4); // 1.5s, 3s, 6s, 10s
+        const next = [1500, 3000, 6000, 10000][failRef.current] || 10000;
+        if (pollMs !== next) setPollMs(next);
       }
-      setRev(newRev);
-      setSessionRevParam(String(newRev));
-    }catch{
-      setKvDegraded(true);
-    }
-  }, 1500);
+    }, pollMs);
 
   // ===== Expiración de reservas pendientes =====
   useEffect(()=>{
@@ -256,6 +277,27 @@ export default function App(){
         });
         const resUpd = data.reservations.map(r=> expired.some(x=>x.id===r.id) ? { ...r, status:"expired" } : r);
 
+
+  useEffect(() => {
+    const onVis = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const newRev = await kvGet(REV_KEY);
+        if (typeof newRev === "number" && newRev !== lastSeenRevRef.current) {
+          const s = await kvGet(STATE_KEY);
+          if (s) setData(s);
+          setRev(newRev);
+          setSessionRevParam(String(newRev));
+          lastSeenRevRef.current = newRev;
+          if (kvDegraded) setKvDegraded(false);
+        }
+      } catch {
+        setKvDegraded(true);
+      }
+    };
+  document.addEventListener("visibilitychange", onVis);
+  return () => document.removeEventListener("visibilitychange", onVis);
+}, [kvDegraded]);
         // Optimista local
         setData(s => ({ ...s, tents: tentsUpd, reservations: resUpd }));
         try {
