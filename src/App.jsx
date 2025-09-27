@@ -9,7 +9,7 @@ const REV_KEY = "coralclub:rev";
 const HOLD_MINUTES = 15;
 const DEFAULT_PIN = "1234";
 
-// ===== Estado inicial =====
+// ===== Estado inicial (golden UI intacta) =====
 const initialData = {
   rev: 0,
   brand: { name: "Coral Club", logoUrl: "/logo.png", logoSize: 42 },
@@ -47,6 +47,7 @@ const initialData = {
   logs: [],
 };
 
+// ===== Util =====
 const nowISO = () => new Date().toISOString();
 const addMinutesISO = (m) => new Date(Date.now() + m * 60000).toISOString();
 
@@ -84,57 +85,39 @@ function usePolling(onTick, delay=1500){
   }, [onTick, delay]);
 }
 
-function deepEqual(a,b){ try{ return JSON.stringify(a)===JSON.stringify(b);}catch(_){return false;}}
+function deepEqual(a,b){ try{ return JSON.stringify(a)===JSON.stringify(b);}catch(_){return false;} }
+function shallow(obj={}, patch={}){ return { ...obj, ...patch }; }
 
-// ---- merge local optimista (no toca UI/CSS)
-function shallow(obj = {}, patch = {}) { return { ...obj, ...patch }; }
+// merge local NO visual (conserva estructura)
 function localMerge(current = {}, patch = {}) {
   const keysObj = ["brand", "background", "layout", "payments"];
   const keysArr = ["categories", "tents", "reservations", "logs"];
   const next = { ...current };
-
   for (const k of keysObj) {
-    if (Object.prototype.hasOwnProperty.call(patch, k)) {
-      next[k] = shallow(current[k] || {}, patch[k] || {});
-    } else if (current[k] !== undefined) {
-      next[k] = current[k];
-    }
+    if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = shallow(current[k]||{}, patch[k]||{});
+    else if (current[k] !== undefined) next[k] = current[k];
   }
   for (const k of keysArr) {
-    if (Object.prototype.hasOwnProperty.call(patch, k)) {
-      next[k] = Array.isArray(patch[k]) ? patch[k].slice() : (Array.isArray(current[k]) ? current[k] : []);
-    } else if (Array.isArray(current[k])) {
-      next[k] = current[k];
-    } else {
-      next[k] = [];
-    }
+    if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = Array.isArray(patch[k]) ? patch[k].slice() : (Array.isArray(current[k]) ? current[k] : []);
+    else next[k] = Array.isArray(current[k]) ? current[k] : [];
   }
-  for (const k of Object.keys(patch)) {
-    if (![...keysObj, ...keysArr].includes(k)) next[k] = patch[k];
-  }
+  for (const k of Object.keys(patch)) if (![...keysObj, ...keysArr].includes(k)) next[k] = patch[k];
   return next;
 }
 
-function logEvent(setData, type, message){
-  setData(s=>{
-    const row = { ts: nowISO(), type, message };
-    const logs = [row, ...s.logs].slice(0,200);
-    return { ...s, logs };
-  });
-}
-
+// ===== App =====
 export default function App(){
   const [data, setData] = useState(initialData);
   const [rev, setRev] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [kvDegraded, setKvDegraded] = useState(false);
 
-  // Backoff para polling (multiusuario robusto)
+  // Backoff / multiuser
   const [pollMs, setPollMs] = useState(1500);
   const failRef = useRef(0);
   const lastSeenRevRef = useRef(0);
 
-  // UI
+  // UI (intacta)
   const [adminOpen, setAdminOpen] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [adminTab, setAdminTab] = useState("catalogo");
@@ -155,28 +138,21 @@ export default function App(){
 
   const [cart, setCart] = useState([]);
 
-  // ======= TOTAL (tentPrice + extras si hay toldo) =======
+  // Total
   const tentPrice = Number((data?.payments?.tentPrice) ?? 0) || 0;
-  const extrasTotal = useMemo(
-    () => cart.reduce((acc, it) => acc + (Number(it.price)||0) * (it.qty||0), 0),
-    [cart]
-  );
-  const total = useMemo(
-    () => (selectedTent ? tentPrice : 0) + extrasTotal,
-    [selectedTent, tentPrice, extrasTotal]
-  );
+  const extrasTotal = useMemo(() => cart.reduce((acc, it) => acc + (Number(it.price)||0) * (it.qty||0), 0), [cart]);
+  const total = useMemo(() => (selectedTent ? tentPrice : 0) + extrasTotal, [selectedTent, tentPrice, extrasTotal]);
 
   const resCode = useMemo(()=>{
     const d = new Date(); const s = d.toISOString().replace(/[-:T.Z]/g,"").slice(2,12);
     return `CC-${selectedTent?.id||"XX"}-${s}`;
   }, [selectedTent]);
 
-  // ===== Anti-jitter topbar/leyenda =====
+  // Anti-jitter topbar/leyenda
   useEffect(()=>{
     if(!topbarRef.current) return;
     const el = topbarRef.current;
     let raf = 0, last = 0;
-
     const ro = new ResizeObserver(([entry])=>{
       const h = entry?.contentRect?.height || el.offsetHeight || 46;
       if (Math.abs(h - last) < 2) return;
@@ -184,7 +160,6 @@ export default function App(){
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(()=> setTopInsetPx(12 + h + 12));
     });
-
     ro.observe(el);
     setTopInsetPx(12 + (el.offsetHeight || 46) + 12);
     return ()=> { ro.disconnect(); cancelAnimationFrame(raf); };
@@ -196,12 +171,11 @@ export default function App(){
     }
   }, [data.brand.logoSize, data.brand.name]);
 
-  // ===== Carga inicial desde KV =====
+  // ===== Inicialización KV =====
   const initOnce = useRef(false);
   useEffect(()=>{
     if (initOnce.current) return;
     initOnce.current = true;
-
     (async ()=>{
       try{
         const cur = await kvGet(STATE_KEY);
@@ -212,11 +186,9 @@ export default function App(){
           if (typeof haveRev !== "number") await kvSet(REV_KEY, 1);
           const r = (await kvGet(REV_KEY)) ?? 1;
           setData(seeded); setRev(r); setSessionRevParam(String(r));
-          logEvent(setData, "system", "Seed inicial");
+          logEvent("system", "Seed inicial");
         } else {
-          const withTents = Array.isArray(cur.tents) && cur.tents.length
-            ? cur
-            : { ...cur, tents: makeGrid(cur?.layout?.count || 20) };
+          const withTents = Array.isArray(cur.tents) && cur.tents.length ? cur : { ...cur, tents: makeGrid(cur?.layout?.count || 20) };
           setData(withTents);
           const r = (await kvGet(REV_KEY)) ?? 1;
           setRev(r); setSessionRevParam(String(r));
@@ -230,29 +202,22 @@ export default function App(){
     })();
   }, []);
 
-  // ===== Polling de rev: nunca se detiene; backoff si KV falla =====
+  // ===== Poll REV (backoff, nunca se detiene) =====
   usePolling(async () => {
     try {
       const newRev = await kvGet(REV_KEY);
-
       if (typeof newRev !== "number") throw new Error("REV_KEY inválido");
-
-      // KV respondió: reset
       if (kvDegraded) setKvDegraded(false);
       if (pollMs !== 1500) setPollMs(1500);
       failRef.current = 0;
-
-      // Si hay rev nuevo, trae estado y aplica
       if (newRev !== rev) {
         const s = await kvGet(STATE_KEY);
-        if (s) {
-          setData((prev) => (JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
-        }
+        if (s && !deepEqual(s, data)) setData(s);
         setRev(newRev);
         setSessionRevParam(String(newRev));
         lastSeenRevRef.current = newRev;
       }
-    } catch (err) {
+    } catch {
       if (!kvDegraded) setKvDegraded(true);
       failRef.current = Math.min(failRef.current + 1, 4); // 1.5s,3s,6s,10s
       const next = [1500, 3000, 6000, 10000][failRef.current] || 10000;
@@ -260,35 +225,35 @@ export default function App(){
     }
   }, pollMs);
 
-  // ===== Pull completo de estado cada 8s como respaldo =====
+  // ===== Pull completo (plan B) cada 8s =====
   usePolling(async () => {
     try {
       const s = await kvGet(STATE_KEY);
-      if (s && !deepEqual(s, data)) {
-        setData(s);
-      }
+      if (s && !deepEqual(s, data)) setData(s);
       if (kvDegraded) setKvDegraded(false);
-    } catch {
-      // seguimos en degradado si falla
-    }
+    } catch {}
   }, 8000);
 
-  // ===== Expiración de reservas pendientes =====
+  // ===== Expirar pendientes =====
   useEffect(()=>{
     const id = setInterval(async ()=>{
       if (!loaded) return;
       const now = nowISO();
       const expired = data.reservations.filter(r => r.status==="pending" && r.expiresAt && r.expiresAt <= now);
       if(expired.length){
-        const tentsUpd = data.tents.map(t=>{
-          const hit = expired.find(r=> r.tentId === t.id);
+        // REFRESCO antes de escribir (evitar pisar estado ajeno)
+        const cur = (await safePull()) || data;
+        const now2 = nowISO();
+        const expired2 = cur.reservations.filter(r => r.status==="pending" && r.expiresAt && r.expiresAt <= now2);
+        if (!expired2.length) return;
+
+        const tentsUpd = cur.tents.map(t=>{
+          const hit = expired2.find(r=> r.tentId === t.id);
           if(hit) return { ...t, state: "av" };
           return t;
         });
-        const resUpd = data.reservations.map(r=> expired.some(x=>x.id===r.id) ? { ...r, status:"expired" } : r);
-
-        await mergeState({ tents: tentsUpd, reservations: resUpd }, "Expirar pendientes");
-        logEvent(setData, "system", `Expiraron ${expired.length} reservas`);
+        const resUpd = cur.reservations.map(r=> expired2.some(x=>x.id===r.id) ? { ...r, status:"expired" } : r);
+        await strongMerge({ tents: tentsUpd, reservations: resUpd }, "Expirar pendientes");
       }
     }, 10000);
     return ()=> clearInterval(id);
@@ -298,64 +263,84 @@ export default function App(){
   useEffect(() => {
     const onVis = async () => {
       if (document.visibilityState !== "visible") return;
-      try {
-        const newRev = await kvGet(REV_KEY);
-        if (typeof newRev === "number" && newRev !== lastSeenRevRef.current) {
-          const s = await kvGet(STATE_KEY);
-          if (s) setData(s);
-          setRev(newRev);
-          setSessionRevParam(String(newRev));
-          lastSeenRevRef.current = newRev;
-          if (kvDegraded) setKvDegraded(false);
-        }
-      } catch {
-        setKvDegraded(true);
-      }
+      await forceSync();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [kvDegraded]);
+  }, []);
 
-  // ===== Auto-rellenar toldos si llegaron vacíos =====
+  // ===== Auto-rellenar toldos si vacíos (persistente) =====
   useEffect(() => {
     if (!loaded) return;
     if (!Array.isArray(data.tents) || data.tents.length === 0) {
-      const tents = makeGrid(data?.layout?.count || 20);
-      // persistimos con mergeState (sube rev interno)
       (async () => {
-        await mergeState({ tents }, "Auto-relleno de toldos");
+        const cur = (await safePull()) || data;
+        if (!Array.isArray(cur.tents) || cur.tents.length === 0) {
+          const tents = makeGrid(cur?.layout?.count || 20);
+          await strongMerge({ tents }, "Auto-relleno de toldos");
+        }
       })();
     }
   }, [loaded, data?.layout?.count]);
 
-  // ===== Helpers de merge (optimista + KV tolerante + rev interno) =====
-  const mergeState = async (patch, logMsg) => {
-    const nextRevInState = (Number(data?.rev) || 0) + 1;
-
-    // 1) Optimista local + rev interno
-    setData((s) => {
-      const withRev = { ...patch, rev: nextRevInState };
-      return localMerge(s, withRev);
-    });
-    if (logMsg) logEvent(setData, "action", logMsg);
-
-    // 2) Persistencia (no bloquea)
+  // ======= Helpers de sync fuertes =======
+  async function safePull() {
     try {
-      const next = await kvMerge(STATE_KEY, { ...patch, rev: nextRevInState }, REV_KEY);
-      setData(next);
-      try {
-        const r = await kvGet(REV_KEY);
-        if (typeof r === "number") {
-          setRev(r);
-          setSessionRevParam(String(r));
-        }
-      } catch {}
-      if (kvDegraded) setKvDegraded(false);
+      const s = await kvGet(STATE_KEY);
+      if (s) return s;
+    } catch {}
+    return null;
+  }
+
+  // Merge con read-modify-write + rev interno + refresco
+  async function strongMerge(patch, logMsg) {
+    // 1) leer fresco
+    const cur = (await safePull()) || data;
+    // 2) rev interno monótono
+    const nextRevInState = (Number(cur?.rev) || 0) + 1;
+    const merged = localMerge(cur, { ...patch, rev: nextRevInState });
+
+    // 3) persistir
+    const saved = await kvMerge(STATE_KEY, merged, REV_KEY);
+
+    // 4) refrescar cliente (pull + rev)
+    try {
+      const newRev = await kvGet(REV_KEY);
+      if (typeof newRev === "number") {
+        setRev(newRev);
+        setSessionRevParam(String(newRev));
+      }
+    } catch {}
+    setData(saved);
+    if (logMsg) logEvent("action", logMsg);
+    if (kvDegraded) setKvDegraded(false);
+    return saved;
+  }
+
+  // Versión “rápida” que usa strongMerge por debajo
+  const mergeState = async (patch, logMsg) => {
+    try {
+      await strongMerge(patch, logMsg);
     } catch (e) {
-      console.warn("KV merge falló, modo local:", e);
+      console.warn("strongMerge falló:", e);
       setKvDegraded(true);
     }
   };
+
+  async function forceSync() {
+    try {
+      const [r, s] = await Promise.all([kvGet(REV_KEY), kvGet(STATE_KEY)]);
+      if (typeof r === "number") {
+        setRev(r);
+        setSessionRevParam(String(r));
+        lastSeenRevRef.current = r;
+      }
+      if (s && !deepEqual(s, data)) setData(s);
+      if (kvDegraded) setKvDegraded(false);
+    } catch {
+      setKvDegraded(true);
+    }
+  }
 
   // ===== Toldo: selección y drag =====
   const onTentClick = (t) => {
@@ -394,42 +379,54 @@ export default function App(){
   const delLine = (key) => setCart(s=> s.filter(x=> x.key!==key));
   const emptyCart = () => setCart([]);
 
-  // ===== Reserva =====
+  // ===== Reserva (read-modify-write garantizado) =====
   async function reservar(){
     if(!selectedTent) { alert("Selecciona un toldo disponible primero"); return; }
+
+    // 1) leer estado FRESCO
+    const cur = (await safePull()) || data;
+
+    // 2) verificar disponibilidad actual
+    const t = cur.tents.find(x=> x.id===selectedTent.id);
+    if(!t || t.state!=="av"){ alert("Ese toldo ya no está disponible"); await forceSync(); return; }
+
+    // 3) construir reserva y aplicar sobre estado fresco
     const expiresAt = addMinutesISO(HOLD_MINUTES);
     const reservation = {
       id: crypto.randomUUID(),
-      tentId: selectedTent.id,
+      tentId: t.id,
       status: "pending",
       createdAt: nowISO(),
       expiresAt,
-      customer: { name: userForm.name||"", phone: userForm.phone||"", email: userForm.email||"" },
+      customer: { name: userForm.name||"", phone: `${userForm.phoneCountry}${(userForm.phone||'').replace(/[^0-9]/g,'')}`, email: userForm.email||"" },
       cart,
     };
-    const t = data.tents.find(x=> x.id===selectedTent.id);
-    if(!t || t.state!=="av"){ alert("Ese toldo ya no está disponible"); return; }
-    const tentsUpd = data.tents.map(x=> x.id===t.id ? { ...x, state:"pr" } : x);
-    const reservationsUpd = [reservation, ...data.reservations];
+    const tentsUpd = cur.tents.map(x=> x.id===t.id ? { ...x, state:"pr" } : x);
+    const reservationsUpd = [reservation, ...cur.reservations];
 
-    // Persistir por mergeState (rev interno + INCR best-effort)
-    await mergeState({ tents: tentsUpd, reservations: reservationsUpd }, `Reserva creada toldo #${t.id}`);
+    // 4) persistir (merge fuerte)
+    const saved = await strongMerge({ tents: tentsUpd, reservations: reservationsUpd }, `Reserva creada toldo #${t.id}`);
+
+    // 5) actualizar UI local coherente
     setMyPendingResId(reservation.id);
+    setSelectedTent(saved.tents.find(x=> x.id===t.id) || null);
     setPayOpen(true);
   }
 
   async function releaseTent(tentId, resId, toState="av", newStatus="expired"){
-    const tentsUpd = data.tents.map(t=> t.id===tentId ? { ...t, state: toState } : t);
-    const resUpd = data.reservations.map(r=> r.id===resId ? { ...r, status:newStatus } : r);
-    await mergeState({ tents: tentsUpd, reservations: resUpd }, `Liberar toldo #${tentId}`);
+    const cur = (await safePull()) || data;
+    const tentsUpd = cur.tents.map(t=> t.id===tentId ? { ...t, state: toState } : t);
+    const resUpd = cur.reservations.map(r=> r.id===resId ? { ...r, status:newStatus } : r);
+    await strongMerge({ tents: tentsUpd, reservations: resUpd }, `Liberar toldo #${tentId}`);
     if(myPendingResId===resId) setMyPendingResId(null);
     if(selectedTent?.id===tentId && toState!=="pr") setSelectedTent(null);
   }
 
   async function confirmPaid(tentId, resId){
-    const tentsUpd = data.tents.map(t=> t.id===tentId ? { ...t, state:"oc" } : t);
-    const resUpd = data.reservations.map(r=> r.id===resId ? { ...r, status:"paid" } : r);
-    await mergeState({ tents: tentsUpd, reservations: resUpd }, `Pago confirmado #${tentId}`);
+    const cur = (await safePull()) || data;
+    const tentsUpd = cur.tents.map(t=> t.id===tentId ? { ...t, state:"oc" } : t);
+    const resUpd = cur.reservations.map(r=> r.id===resId ? { ...r, status:"paid" } : r);
+    await strongMerge({ tents: tentsUpd, reservations: resUpd }, `Pago confirmado #${tentId}`);
     if(myPendingResId===resId) setMyPendingResId(null);
   }
 
@@ -454,7 +451,7 @@ export default function App(){
       "",
       "*Cliente*",
       `• Nombre: ${userForm.name}`,
-      `• Teléfono (WhatsApp): ${userForm.phone}`,
+      `• Teléfono (WhatsApp): ${userForm.phoneCountry}${(userForm.phone || '').replace(/[^0-9]/g, '')}`,
       userForm.email ? `• Email: ${userForm.email}` : null,
       "",
       "*Extras*",
@@ -470,17 +467,17 @@ export default function App(){
     window.open(`https://wa.me/${num}?text=${txt}`, "_blank");
   };
 
-  // ===== Admin handlers (autosave sincronizado) =====
+  // ===== Admin handlers (sin tocar UI) =====
   const onChangeBrandName = async (v)=> mergeState({ brand: { ...data.brand, name: v } }, "Editar marca");
   const onChangeLogoUrl = async (v)=> mergeState({ brand: { ...data.brand, logoUrl: v } }, "Editar logo");
   const onChangeLogoSize = async (v)=> mergeState({ brand: { ...data.brand, logoSize: v } }, "Tamaño logo");
   const onChangeBgPath  = async (v)=> mergeState({ background: { ...data.background, publicPath: v } }, "Editar fondo");
   const onChangePayments = async (patch)=> mergeState({ payments: { ...data.payments, ...patch } }, "Editar pagos");
 
-  // Seed grid / Regenerar (persistente)
   const regenGrid = async ()=>{
-    const tents = makeGrid(data.layout.count || 20);
-    await mergeState({ tents }, "Regenerar grilla");
+    const cur = (await safePull()) || data;
+    const tents = makeGrid(cur.layout.count || 20);
+    await strongMerge({ tents }, "Regenerar grilla");
   };
 
   // Hotkeys
@@ -495,6 +492,7 @@ export default function App(){
   const bustLogo = `${data.brand.logoUrl || "/logo.png"}?v=${sessionRevParam}`;
   const bustMap  = `${data.background.publicPath || "/Mapa.png"}?v=${sessionRevParam}`;
 
+  // ===== Render (golden UI intacta) =====
   return (
     <div className="app-shell" onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
       <div className="phone">
@@ -795,9 +793,10 @@ export default function App(){
                       <button className="btn" onClick={()=> setEditingMap(v=>!v)}>{editingMap ? "Dejar de editar mapa" : "Editar mapa (drag&drop)"}</button>
                       <button className="btn" onClick={regenGrid}>Regenerar en rejilla</button>
                       <button className="btn" onClick={async ()=>{
-                        const last = data.tents[data.tents.length-1];
+                        const cur = (await safePull()) || data;
+                        const last = cur.tents[cur.tents.length-1];
                         const t = { id: (last?.id||0)+1, state:"av", x:0.5, y:0.5 };
-                        await mergeState({ tents: [...data.tents, t] }, "Agregar toldo");
+                        await strongMerge({ tents: [...cur.tents, t] }, "Agregar toldo");
                       }}>+ Agregar Toldo</button>
                     </div>
                     <div className="row" style={{ marginTop:8 }}>
