@@ -348,17 +348,25 @@ export default function App(){
 
   // ===== Helpers de merge (optimista + KV tolerante) =====
   const mergeState = async (patch, logMsg) => {
+    // Calcula rev embebido (monótono)
+    const nextRevInState = (Number(data?.rev) || 0) + 1;
+
     // 1) Optimista local
-    setData((s) => localMerge(s, patch));
+    setData((s) => localMerge(s, { ...patch, rev: nextRevInState }));
     if (logMsg) logEvent(setData, "action", logMsg);
 
     // 2) Persistencia a KV (no bloquea)
     try {
-      const next = await kvMerge(STATE_KEY, patch, REV_KEY);
+      const next = await kvMerge(STATE_KEY, { ...patch, rev: nextRevInState }, REV_KEY);
       setData(next);
-      const r = await kvGet(REV_KEY);
-      setRev(r || 0);
-      setSessionRevParam(String(r || 0));
+      // intentamos leer REV_KEY; si falla no importa (tenemos rev interno)
+      try {
+        const r = await kvGet(REV_KEY);
+        if (typeof r === "number") {
+          setRev(r);
+          setSessionRevParam(String(r));
+        }
+      } catch {}
       if (kvDegraded) setKvDegraded(false);
     } catch (e) {
       console.warn("KV merge falló, modo local:", e);
