@@ -1,5 +1,5 @@
 // src/useKV.js
-// Helpers para Vercel KV (REST) con merge seguro y best-effort INCR
+// Helpers para Vercel KV (REST) con merge por ID y best-effort INCR
 
 const BASE = import.meta.env.VITE_KV_REST_API_URL?.replace(/\/+$/, "");
 const TOKEN = import.meta.env.VITE_KV_REST_API_TOKEN || "";
@@ -56,54 +56,115 @@ export async function kvIncr(key) {
   return r?.result ?? null;
 }
 
-// ---- MERGE SEGURO PARA coralclub:state ----
-function shallow(obj = {}, patch = {}) {
-  return { ...obj, ...patch };
+// ===== Merge helpers =====
+const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+const shallow = (a = {}, b = {}) => ({ ...(a || {}), ...(b || {}) });
+
+// Merge por ID para arrays: upsert por id con merge superficial del objeto
+function mergeArrayById(current = [], patch = []) {
+  const byId = new Map();
+  (current || []).forEach(it => byId.set(it.id, isObj(it) ? { ...it } : it));
+  (patch || []).forEach(it => {
+    if (!it || it.id == null) return;
+    const prev = byId.get(it.id);
+    if (isObj(prev) && isObj(it)) {
+      byId.set(it.id, { ...prev, ...it });
+    } else {
+      byId.set(it.id, it);
+    }
+  });
+  return Array.from(byId.values());
 }
 
+// Merge de categorías con items por id (sin romper tu UI)
+function mergeCategories(curCats = [], patchCats = []) {
+  const byId = new Map();
+  (curCats || []).forEach(c => byId.set(c.id, { ...c, items: Array.isArray(c.items) ? c.items.slice() : [] }));
+  (patchCats || []).forEach(pc => {
+    if (!pc || pc.id == null) return;
+    const cur = byId.get(pc.id);
+    if (!cur) {
+      byId.set(pc.id, { id: pc.id, name: pc.name, items: Array.isArray(pc.items) ? pc.items.slice() : [] });
+    } else {
+      const merged = { ...cur, ...pc };
+      if (Array.isArray(cur.items) || Array.isArray(pc.items)) {
+        merged.items = mergeArrayById(cur.items || [], pc.items || []);
+      }
+      byId.set(pc.id, merged);
+    }
+  });
+  return Array.from(byId.values());
+}
+
+/**
+ * kvMerge: lee estado actual, aplica patch con merge por ramas/ID y guarda.
+ * - Objetos nivel 1: brand, background, layout, payments → merge superficial.
+ * - Arrays: tents, reservations, logs → merge por id (upsert / merge superficial).
+ * - categories → merge por id y por id dentro de items.
+ * - Otras claves (e.g., rev) se copian directamente.
+ * - Best-effort INCR del revKey (si falla, no rompemos).
+ */
 export async function kvMerge(stateKey, patch, revKey) {
-  // 1) Estado actual
+  // 1) Estado más reciente
   const current = (await kvGet(stateKey)) || {};
 
   // 2) Merge por ramas
-  const keysObj  = ["brand", "background", "layout", "payments"];
-  const keysArr  = ["categories", "tents", "reservations", "logs"];
-
   const next = { ...current };
 
-  // Objetos nivel 1 (merge superficial)
-  for (const k of keysObj) {
+  // Objetos de primer nivel
+  const objKeys = ["brand", "background", "layout", "payments"];
+  for (const k of objKeys) {
     if (Object.prototype.hasOwnProperty.call(patch || {}, k)) {
-      next[k] = shallow(current?.[k] || {}, patch[k] || {});
+      next[k] = shallow(current?.[k], patch[k]);
     } else if (current?.[k] !== undefined) {
       next[k] = current[k];
     }
   }
 
-  // Arrays (reemplazo si vienen en el patch)
-  for (const k of keysArr) {
-    if (Object.prototype.hasOwnProperty.call(patch || {}, k)) {
-      const v = patch[k];
-      next[k] = Array.isArray(v) ? v.slice() : (Array.isArray(current?.[k]) ? current[k] : []);
-    } else {
-      next[k] = Array.isArray(current?.[k]) ? current[k] : [];
-    }
+  // Arrays con merge por id
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "tents")) {
+    next.tents = mergeArrayById(current?.tents || [], patch.tents || []);
+  } else {
+    next.tents = Array.isArray(current?.tents) ? current.tents : [];
   }
 
-  // Otras claves del patch (ej. rev interno)
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "reservations")) {
+    next.reservations = mergeArrayById(current?.reservations || [], patch.reservations || []);
+  } else {
+    next.reservations = Array.isArray(current?.reservations) ? current.reservations : [];
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "logs")) {
+    // logs por id no siempre tienen id; hacemos concatenación con dedupe por ts+type+message
+    const cur = current?.logs || [];
+    const p  = patch?.logs || [];
+    const key = (r) => `${r?.ts || ""}|${r?.type || ""}|${r?.message || ""}`;
+    const map = new Map();
+    cur.forEach(r => map.set(key(r), r));
+    p.forEach(r => map.set(key(r), r));
+    next.logs = Array.from(map.values()).slice(-200); // limit
+  } else {
+    next.logs = Array.isArray(current?.logs) ? current.logs : [];
+  }
+
+  // categories con merge de items por id
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "categories")) {
+    next.categories = mergeCategories(current?.categories || [], patch.categories || []);
+  } else {
+    next.categories = Array.isArray(current?.categories) ? current.categories : [];
+  }
+
+  // Cualquier otra clave del patch (p.ej. rev embebido)
   for (const k of Object.keys(patch || {})) {
-    if (![...keysObj, ...keysArr].includes(k)) next[k] = patch[k];
-  }
-
-  // Preservar rev si no vino en patch
-  if (typeof current.rev === "number" && !("rev" in (patch || {}))) {
-    next.rev = current.rev;
+    if (![...objKeys, "tents", "reservations", "logs", "categories"].includes(k)) {
+      next[k] = patch[k];
+    }
   }
 
   // 3) Guardar
   await kvSet(stateKey, next);
 
-  // 4) Best-effort INCR (si falla, el plan B sincroniza)
+  // 4) Best-effort INCR
   if (revKey) {
     try {
       const r = await kvIncr(revKey);
@@ -111,10 +172,9 @@ export async function kvMerge(stateKey, patch, revKey) {
         await kvSet(revKey, 1);
       }
     } catch {
-      // ignorar
+      // ignorar; el cliente tiene pull de respaldo
     }
   }
 
-  // 5) Devolver merged completo
   return next;
 }
