@@ -1,64 +1,21 @@
-// api/boot.js
-import { kv } from "@vercel/kv";
-
-const STATE_KEY = "coralclub:state";
-const REV_KEY = "coralclub:rev";
-
-const initialData = {
-  rev: 0,
-  brand: { name: "Coral Club", logoUrl: "/logo.png", logoSize: 42 },
-  background: { publicPath: "/Mapa.png" },
-  layout: { count: 20 },
-  payments: {
-    currency: "USD",
-    tentPrice: 10,
-    whatsapp: "",
-    mp: { link: "", alias: "" },
-    pagoMovil: { bank: "", rif: "", phone: "" },
-    zelle: { email: "", name: "" },
-  },
-  categories: [],
-  tents: [],
-  reservations: [],
-  logs: [],
-};
-
-function makeGrid(count = 20) {
-  const cols = Math.ceil(Math.sqrt(count));
-  const rows = Math.ceil(count / cols);
-  const padX = 0.1,
-    padTop = 0.16,
-    padBottom = 0.1;
-  const usableW = 1 - padX * 2;
-  const usableH = 1 - padTop - padBottom;
-  return Array.from({ length: count }).map((_, i) => {
-    const r = Math.floor(i / cols);
-    const c = i % cols;
-    const x = padX + ((c + 0.5) / cols) * usableW;
-    const y = padTop + ((r + 0.5) / rows) * usableH;
-    return { id: i + 1, state: "av", x: +x.toFixed(4), y: +y.toFixed(4) };
-  });
+export const config = { runtime: 'nodejs20.x' };
+function ctxOr500(res){ const url = process.env.KV_REST_API_URL, token = process.env.KV_REST_API_TOKEN;
+  if(!url || !token){ res.status(500).json({ ok:false, error:"Missing KV_REST_API_URL or KV_REST_API_TOKEN" }); return null; }
+  return { url: url.replace(/\/$/, ''), token };
 }
-
-export default async function handler(req, res) {
-  try {
-    if (req.query.reset === "1") {
-      await kv.del(STATE_KEY);
-      await kv.del(REV_KEY);
-    }
-
-    let state = await kv.get(STATE_KEY);
-    if (!state) {
-      const seeded = { ...initialData, tents: makeGrid(initialData.layout.count) };
-      await kv.set(STATE_KEY, seeded);
-      await kv.set(REV_KEY, 1);
-      return res.status(200).json({ ok: true, state: seeded, rev: 1 });
-    }
-
-    const rev = (await kv.get(REV_KEY)) ?? 1;
-    return res.status(200).json({ ok: true, state, rev });
-  } catch (e) {
-    console.error("boot error", e);
-    res.status(500).json({ ok: false, error: String(e) });
+const STATE_KEY="coralclub:state", REV_KEY="coralclub:rev";
+const initial={ brand:{name:"Coral Club",logoUrl:"/logo.png",logoSize:42}, background:{publicPath:"/Mapa.png"}, layout:{},
+  payments:{currency:"USD",tentPrice:0,whatsapp:""}, categories:[], tents:[], reservations:[], logs:[], rev:1 };
+export default async function handler(req,res){
+  const ctx = ctxOr500(res); if(!ctx) return;
+  const head={ headers:{ Authorization:`Bearer ${ctx.token}` } }, headJson={ headers:{ Authorization:`Bearer ${ctx.token}`,"Content-Type":"application/json" } };
+  const g = p=>fetch(`${ctx.url}/${p}`, head).then(r=>r.json().catch(()=>null));
+  let rev = await g(`get/${encodeURIComponent(REV_KEY)}`); rev = (rev&&rev.result)||0;
+  let state = await g(`get/${encodeURIComponent(STATE_KEY)}`); state = state&&state.result;
+  if(!state){
+    await fetch(`${ctx.url}/set/${encodeURIComponent(STATE_KEY)}`, { method:"POST", ...headJson, body: JSON.stringify({ value: initial }) });
+    await fetch(`${ctx.url}/set/${encodeURIComponent(REV_KEY)}`, { method:"POST", ...headJson, body: JSON.stringify({ value: 1 }) });
+    state = initial; rev = 1;
   }
+  res.status(200).json({ ok:true, state, rev });
 }
