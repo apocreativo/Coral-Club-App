@@ -263,6 +263,23 @@ export default function App(){
       }
     }, pollMs);
 
+  // ===== Pull completo de estado cada 8s como respaldo del REV_KEY =====
+  usePolling(async () => {
+    try {
+      const s = await kvGet(STATE_KEY);
+    if (s && !deepEqual(s, data)) {
+        setData(s);
+      }
+      // si vuelve KV, salimos de degradado
+      if (kvDegraded) setKvDegraded(false);
+    } catch (e) {
+      // si falla, no pasa nada: seguimos en modo degradado
+    }
+  }, 8000);
+
+
+
+  
   // ===== Expiración de reservas pendientes =====
   useEffect(()=>{
     const id = setInterval(async ()=>{
