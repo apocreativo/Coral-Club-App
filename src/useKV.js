@@ -1,21 +1,22 @@
+// src/useKV.js
+const API_BASE = '';
 
-const API = { base: "/api/kv" };
-async function j(r){ try{ return await r.json(); }catch(_){ return null; } }
-export const STATE_KEY = "coralclub:state";
-export const REV_KEY = "coralclub:rev";
-export async function boot(){ const r = await fetch("/api/boot"); return await j(r); }
-export async function kvGet(key){ const r = await fetch(`${API.base}/get/${encodeURIComponent(key)}`); return (await j(r))?.result ?? null; }
-export async function kvSet(key, value){ const r = await fetch(`${API.base}/set/${encodeURIComponent(key)}`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ value }) }); return (await j(r))?.result ?? null; }
-export async function kvIncr(key){ const r = await fetch(`${API.base}/incr/${encodeURIComponent(key)}`, { method:"POST" }); return (await j(r))?.result ?? 0; }
-export async function kvMerge(stateKey, patch, revKey){
-  const cur = await kvGet(stateKey);
-  const next = cur ? { ...cur } : {};
-  for(const [k,v] of Object.entries(patch||{})){
-    if(Array.isArray(v)) next[k] = v; else if (v && typeof v === "object") next[k] = { ...(next[k]||{}), ...v }; else next[k] = v;
+async function api(path, opts = {}){
+  const res = await fetch(`${API_BASE}/api/${path}`, {
+    credentials: 'same-origin',
+    ...opts,
+    headers: { 'content-type': 'application/json', ...(opts.headers||{}) }
+  });
+  if(!res.ok){
+    const txt = await res.text().catch(()=> '');
+    throw new Error(`API ${path} ${res.status} ${txt}`);
   }
-  const newRev = await kvIncr(revKey);
-  next.rev = newRev || 0;
-  await kvSet(stateKey, next);
-  return next;
+  return res.json();
 }
-export default { boot, kvGet, kvSet, kvIncr, kvMerge, STATE_KEY, REV_KEY };
+export async function kvGet(key){ const r = await api('kv-get',{method:'POST',body:JSON.stringify({key})}); return r?.value ?? null; }
+export async function kvSet(key,value){ const r = await api('kv-set',{method:'POST',body:JSON.stringify({key,value})}); return r?.ok===true; }
+export async function kvIncr(key){ const r = await api('kv-incr',{method:'POST',body:JSON.stringify({key})}); return r?.value ?? null; }
+export async function kvMerge(stateKey, patch, revKey){
+  const r = await api('kv-merge',{method:'POST',body:JSON.stringify({stateKey,patch,revKey})});
+  return r?.state ?? null;
+}
