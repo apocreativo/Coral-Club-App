@@ -288,7 +288,7 @@ export default function App(){
 
   // ===== WhatsApp =====
   const openWhatsApp = () => {
-    const num = ((data.payments||{}).whatsapp || "").replace(/[^0-9]/g, "");
+    const num = (((data.payments||{}).whatsapp || "") || "").replace(/[^0-9]/g, "");
     if(!num) return alert("Configura el número de WhatsApp en Admin → Pagos");
     if(!selectedTent) return alert("Selecciona un toldo disponible primero");
     if(!userForm.name || !userForm.phone){ alert("Completa tu nombre y teléfono."); return; }
@@ -650,7 +650,7 @@ export default function App(){
                         <input className="input" value={((data.payments||{}).currency || "USD")} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
                       </label>
                       <label><div>WhatsApp (Ejem 58412...)</div>
-                        <input className="input" value={(data.payments||{}).whatsapp} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
+                        <input className="input" value={((data.payments||{}).whatsapp || "")} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
                       </label>
                     </div>
                     <div className="hr"></div>

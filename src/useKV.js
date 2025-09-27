@@ -11,9 +11,7 @@ export async function kvMerge(stateKey, patch, revKey){
   const cur = await kvGet(stateKey);
   const next = cur ? { ...cur } : {};
   for(const [k,v] of Object.entries(patch||{})){
-    if(Array.isArray(v)) next[k] = v;
-    else if (v && typeof v === "object") next[k] = { ...(next[k]||{}), ...v };
-    else next[k] = v;
+    if(Array.isArray(v)) next[k] = v; else if (v && typeof v === "object") next[k] = { ...(next[k]||{}), ...v }; else next[k] = v;
   }
   const newRev = await kvIncr(revKey);
   next.rev = newRev || 0;
