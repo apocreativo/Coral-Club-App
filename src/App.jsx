@@ -1,7 +1,6 @@
-// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
-import { kvGet, kvSet, kvMerge } from "./useKV";
+import { kvGet, kvSet, kvIncr, kvMerge } from "./useKV";
 
 // ===== Claves en KV =====
 const STATE_KEY = "coralclub:state";
@@ -9,7 +8,7 @@ const REV_KEY = "coralclub:rev";
 const HOLD_MINUTES = 15;
 const DEFAULT_PIN = "1234";
 
-// ===== Estado inicial (golden UI intacta) =====
+// ===== Estado inicial =====
 const initialData = {
   rev: 0,
   brand: { name: "Coral Club", logoUrl: "/logo.png", logoSize: 42 },
@@ -21,7 +20,6 @@ const initialData = {
     mp: { link: "", alias: "" },
     pagoMovil: { bank: "", rif: "", phone: "" },
     zelle: { email: "", name: "" },
-    tentPrice: 10,
   },
   categories: [
     {
@@ -42,12 +40,11 @@ const initialData = {
       ],
     },
   ],
-  tents: [],
-  reservations: [],
+  tents: [],         // {id,x,y,state}
+  reservations: [],  // {id,tentId,customer,status,createdAt,expiresAt}
   logs: [],
 };
 
-// ===== Util =====
 const nowISO = () => new Date().toISOString();
 const addMinutesISO = (m) => new Date(Date.now() + m * 60000).toISOString();
 
@@ -80,44 +77,25 @@ const throttle = (fn, ms=250) => {
 
 function usePolling(onTick, delay=1500){
   useEffect(()=>{
-    const id = setInterval(onTick, delay);
+    let id = setInterval(onTick, delay);
     return ()=> clearInterval(id);
   }, [onTick, delay]);
 }
 
-function deepEqual(a,b){ try{ return JSON.stringify(a)===JSON.stringify(b);}catch(_){return false;} }
-function shallow(obj={}, patch={}){ return { ...obj, ...patch }; }
-
-// merge local NO visual (conserva estructura)
-function localMerge(current = {}, patch = {}) {
-  const keysObj = ["brand", "background", "layout", "payments"];
-  const keysArr = ["categories", "tents", "reservations", "logs"];
-  const next = { ...current };
-  for (const k of keysObj) {
-    if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = shallow(current[k]||{}, patch[k]||{});
-    else if (current[k] !== undefined) next[k] = current[k];
-  }
-  for (const k of keysArr) {
-    if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = Array.isArray(patch[k]) ? patch[k].slice() : (Array.isArray(current[k]) ? current[k] : []);
-    else next[k] = Array.isArray(current[k]) ? current[k] : [];
-  }
-  for (const k of Object.keys(patch)) if (![...keysObj, ...keysArr].includes(k)) next[k] = patch[k];
-  return next;
+function logEvent(setData, type, message){
+  setData(s=>{
+    const row = { ts: nowISO(), type, message };
+    const logs = [row, ...s.logs].slice(0,200);
+    return { ...s, logs };
+  });
 }
 
-// ===== App =====
 export default function App(){
   const [data, setData] = useState(initialData);
   const [rev, setRev] = useState(0);
   const [loaded, setLoaded] = useState(false);
-  const [kvDegraded, setKvDegraded] = useState(false);
 
-  // Backoff / multiuser
-  const [pollMs, setPollMs] = useState(1500);
-  const failRef = useRef(0);
-  const lastSeenRevRef = useRef(0);
-
-  // UI (intacta)
+  // UI
   const [adminOpen, setAdminOpen] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [adminTab, setAdminTab] = useState("catalogo");
@@ -136,33 +114,26 @@ export default function App(){
   const [userForm, setUserForm] = useState({ name: '', phoneCountry: '+58', phone: '', email: '' });
   const [myPendingResId, setMyPendingResId] = useState(null);
 
+  // compute totals
   const [cart, setCart] = useState([]);
-
-  // Total
-  const tentPrice = Number((data?.payments?.tentPrice) ?? 0) || 0;
-  const extrasTotal = useMemo(() => cart.reduce((acc, it) => acc + (Number(it.price)||0) * (it.qty||0), 0), [cart]);
-  const total = useMemo(() => (selectedTent ? tentPrice : 0) + extrasTotal, [selectedTent, tentPrice, extrasTotal]);
-
+  const total = useMemo(() => cart.reduce((a,b)=> a + b.price*b.qty, 0), [cart]);
   const resCode = useMemo(()=>{
     const d = new Date(); const s = d.toISOString().replace(/[-:T.Z]/g,"").slice(2,12);
     return `CC-${selectedTent?.id||"XX"}-${s}`;
   }, [selectedTent]);
 
-  // Anti-jitter topbar/leyenda
+  // top inset dynamic
   useEffect(()=>{
     if(!topbarRef.current) return;
     const el = topbarRef.current;
-    let raf = 0, last = 0;
-    const ro = new ResizeObserver(([entry])=>{
-      const h = entry?.contentRect?.height || el.offsetHeight || 46;
-      if (Math.abs(h - last) < 2) return;
-      last = h;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(()=> setTopInsetPx(12 + h + 12));
+    const ro = new ResizeObserver((entries)=>{
+      for(const entry of entries){
+        const h = entry.contentRect.height || el.offsetHeight || 46;
+        setTopInsetPx(12 + h + 12);
+      }
     });
     ro.observe(el);
-    setTopInsetPx(12 + (el.offsetHeight || 46) + 12);
-    return ()=> { ro.disconnect(); cancelAnimationFrame(raf); };
+    return ()=> ro.disconnect();
   }, []);
   useEffect(()=>{
     if(topbarRef.current){
@@ -171,176 +142,73 @@ export default function App(){
     }
   }, [data.brand.logoSize, data.brand.name]);
 
-  // ===== Inicialización KV =====
-  const initOnce = useRef(false);
+  // ===== Carga inicial desde KV (o seedea) =====
   useEffect(()=>{
-    if (initOnce.current) return;
-    initOnce.current = true;
     (async ()=>{
       try{
         const cur = await kvGet(STATE_KEY);
         if(!cur){
           const seeded = { ...initialData, tents: makeGrid(initialData.layout.count) };
           await kvSet(STATE_KEY, seeded);
-          const haveRev = await kvGet(REV_KEY);
-          if (typeof haveRev !== "number") await kvSet(REV_KEY, 1);
-          const r = (await kvGet(REV_KEY)) ?? 1;
-          setData(seeded); setRev(r); setSessionRevParam(String(r));
-          logEvent("system", "Seed inicial");
+          await kvSet(REV_KEY, 1);
+          setData(seeded); setRev(1);
+          setSessionRevParam("1");
+          logEvent(setData, "system", "Seed inicial");
         } else {
-          const withTents = Array.isArray(cur.tents) && cur.tents.length ? cur : { ...cur, tents: makeGrid(cur?.layout?.count || 20) };
-          setData(withTents);
+          setData(cur);
           const r = (await kvGet(REV_KEY)) ?? 1;
           setRev(r); setSessionRevParam(String(r));
         }
+        setLoaded(true);
       }catch(e){
-        console.error("Error inicial:", e);
-        setKvDegraded(true);
-      }finally{
+        console.error(e);
         setLoaded(true);
       }
     })();
   }, []);
 
-  // ===== Poll REV (backoff, nunca se detiene) =====
-  usePolling(async () => {
-    try {
-      const newRev = await kvGet(REV_KEY);
-      if (typeof newRev !== "number") throw new Error("REV_KEY inválido");
-      if (kvDegraded) setKvDegraded(false);
-      if (pollMs !== 1500) setPollMs(1500);
-      failRef.current = 0;
-      if (newRev !== rev) {
-        const s = await kvGet(STATE_KEY);
-        if (s && !deepEqual(s, data)) setData(s);
-        setRev(newRev);
-        setSessionRevParam(String(newRev));
-        lastSeenRevRef.current = newRev;
+  // ===== Polling de rev =====
+  usePolling(async ()=>{
+    try{
+      const r = await kvGet(REV_KEY);
+      if(typeof r === "number" && r !== rev){
+        setRev(r);
+        const cur = await kvGet(STATE_KEY);
+        if(cur){
+          setData(cur);
+          setSessionRevParam(String(r));
+        }
       }
-    } catch {
-      if (!kvDegraded) setKvDegraded(true);
-      failRef.current = Math.min(failRef.current + 1, 4); // 1.5s,3s,6s,10s
-      const next = [1500, 3000, 6000, 10000][failRef.current] || 10000;
-      if (pollMs !== next) setPollMs(next);
-    }
-  }, pollMs);
+    }catch(e){ /* ignore */ }
+  }, 1500);
 
-  // ===== Pull completo (plan B) cada 8s =====
-  usePolling(async () => {
-    try {
-      const s = await kvGet(STATE_KEY);
-      if (s && !deepEqual(s, data)) setData(s);
-      if (kvDegraded) setKvDegraded(false);
-    } catch {}
-  }, 8000);
-
-  // ===== Expirar pendientes =====
+  // ===== Expiración de reservas pendientes =====
   useEffect(()=>{
     const id = setInterval(async ()=>{
-      if (!loaded) return;
       const now = nowISO();
       const expired = data.reservations.filter(r => r.status==="pending" && r.expiresAt && r.expiresAt <= now);
       if(expired.length){
-        // REFRESCO antes de escribir (evitar pisar estado ajeno)
-        const cur = (await safePull()) || data;
-        const now2 = nowISO();
-        const expired2 = cur.reservations.filter(r => r.status==="pending" && r.expiresAt && r.expiresAt <= now2);
-        if (!expired2.length) return;
-
-        const tentsUpd = cur.tents.map(t=>{
-          const hit = expired2.find(r=> r.tentId === t.id);
+        const tentsUpd = data.tents.map(t=>{
+          const hit = expired.find(r=> r.tentId === t.id);
           if(hit) return { ...t, state: "av" };
           return t;
         });
-        const resUpd = cur.reservations.map(r=> expired2.some(x=>x.id===r.id) ? { ...r, status:"expired" } : r);
-        await strongMerge({ tents: tentsUpd, reservations: resUpd }, "Expirar pendientes");
+        const resUpd = data.reservations.map(r=> expired.some(x=>x.id===r.id) ? { ...r, status:"expired" } : r);
+        await kvMerge(STATE_KEY, { tents: tentsUpd, reservations: resUpd }, REV_KEY);
+        logEvent(setData, "system", `Expiraron ${expired.length} reservas`);
       }
     }, 10000);
     return ()=> clearInterval(id);
-  }, [loaded, data.reservations, data.tents]);
+  }, [data.reservations, data.tents]);
 
-  // ===== Resync al volver a la pestaña =====
-  useEffect(() => {
-    const onVis = async () => {
-      if (document.visibilityState !== "visible") return;
-      await forceSync();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
-
-  // ===== Auto-rellenar toldos si vacíos (persistente) =====
-  useEffect(() => {
-    if (!loaded) return;
-    if (!Array.isArray(data.tents) || data.tents.length === 0) {
-      (async () => {
-        const cur = (await safePull()) || data;
-        if (!Array.isArray(cur.tents) || cur.tents.length === 0) {
-          const tents = makeGrid(cur?.layout?.count || 20);
-          await strongMerge({ tents }, "Auto-relleno de toldos");
-        }
-      })();
-    }
-  }, [loaded, data?.layout?.count]);
-
-  // ======= Helpers de sync fuertes =======
-  async function safePull() {
-    try {
-      const s = await kvGet(STATE_KEY);
-      if (s) return s;
-    } catch {}
-    return null;
-  }
-
-  // Merge con read-modify-write + rev interno + refresco
-  async function strongMerge(patch, logMsg) {
-    // 1) leer fresco
-    const cur = (await safePull()) || data;
-    // 2) rev interno monótono
-    const nextRevInState = (Number(cur?.rev) || 0) + 1;
-    const merged = localMerge(cur, { ...patch, rev: nextRevInState });
-
-    // 3) persistir
-    const saved = await kvMerge(STATE_KEY, merged, REV_KEY);
-
-    // 4) refrescar cliente (pull + rev)
-    try {
-      const newRev = await kvGet(REV_KEY);
-      if (typeof newRev === "number") {
-        setRev(newRev);
-        setSessionRevParam(String(newRev));
-      }
-    } catch {}
-    setData(saved);
-    if (logMsg) logEvent("action", logMsg);
-    if (kvDegraded) setKvDegraded(false);
-    return saved;
-  }
-
-  // Versión “rápida” que usa strongMerge por debajo
+  // ===== Helpers de merge =====
   const mergeState = async (patch, logMsg) => {
-    try {
-      await strongMerge(patch, logMsg);
-    } catch (e) {
-      console.warn("strongMerge falló:", e);
-      setKvDegraded(true);
-    }
+    const next = await kvMerge(STATE_KEY, patch, REV_KEY);
+    setData(next);
+    const r = await kvGet(REV_KEY);
+    setRev(r||0); setSessionRevParam(String(r||0));
+    if(logMsg) logEvent(setData, "action", logMsg);
   };
-
-  async function forceSync() {
-    try {
-      const [r, s] = await Promise.all([kvGet(REV_KEY), kvGet(STATE_KEY)]);
-      if (typeof r === "number") {
-        setRev(r);
-        setSessionRevParam(String(r));
-        lastSeenRevRef.current = r;
-      }
-      if (s && !deepEqual(s, data)) setData(s);
-      if (kvDegraded) setKvDegraded(false);
-    } catch {
-      setKvDegraded(true);
-    }
-  }
 
   // ===== Toldo: selección y drag =====
   const onTentClick = (t) => {
@@ -358,7 +226,7 @@ export default function App(){
     x = Math.min(0.98, Math.max(0.02, x));
     y = Math.min(0.98, Math.max(0.02, y));
     const tentsUpd = data.tents.map(t => t.id===dragId ? { ...t, x:+x.toFixed(4), y:+y.toFixed(4) } : t);
-    setData(s=> ({ ...s, tents: tentsUpd })); // preview local
+    setData(s=> ({ ...s, tents: tentsUpd })); // local preview
   }, 150);
   const onMouseUp = async ()=>{
     if(!editingMap || dragId==null) return;
@@ -379,64 +247,49 @@ export default function App(){
   const delLine = (key) => setCart(s=> s.filter(x=> x.key!==key));
   const emptyCart = () => setCart([]);
 
-  // ===== Reserva (read-modify-write garantizado) =====
+  // ===== Reserva =====
   async function reservar(){
     if(!selectedTent) { alert("Selecciona un toldo disponible primero"); return; }
-
-    // 1) leer estado FRESCO
-    const cur = (await safePull()) || data;
-
-    // 2) verificar disponibilidad actual
-    const t = cur.tents.find(x=> x.id===selectedTent.id);
-    if(!t || t.state!=="av"){ alert("Ese toldo ya no está disponible"); await forceSync(); return; }
-
-    // 3) construir reserva y aplicar sobre estado fresco
     const expiresAt = addMinutesISO(HOLD_MINUTES);
     const reservation = {
       id: crypto.randomUUID(),
-      tentId: t.id,
+      tentId: selectedTent.id,
       status: "pending",
       createdAt: nowISO(),
       expiresAt,
-      customer: { name: userForm.name||"", phone: `${userForm.phoneCountry}${(userForm.phone||'').replace(/[^0-9]/g,'')}`, email: userForm.email||"" },
+      customer: { name: userForm.name||"", phone: userForm.phone||"", email: userForm.email||"" },
       cart,
     };
-    const tentsUpd = cur.tents.map(x=> x.id===t.id ? { ...x, state:"pr" } : x);
-    const reservationsUpd = [reservation, ...cur.reservations];
-
-    // 4) persistir (merge fuerte)
-    const saved = await strongMerge({ tents: tentsUpd, reservations: reservationsUpd }, `Reserva creada toldo #${t.id}`);
-
-    // 5) actualizar UI local coherente
+    // set 'pr' if still available
+    const t = data.tents.find(x=> x.id===selectedTent.id);
+    if(!t || t.state!=="av"){ alert("Ese toldo ya no está disponible"); return; }
+    const tentsUpd = data.tents.map(x=> x.id===t.id ? { ...x, state:"pr" } : x);
+    const reservationsUpd = [reservation, ...data.reservations];
+    await mergeState({ tents: tentsUpd, reservations: reservationsUpd }, `Reserva creada toldo #${t.id}`);
     setMyPendingResId(reservation.id);
-    setSelectedTent(saved.tents.find(x=> x.id===t.id) || null);
     setPayOpen(true);
   }
-
   async function releaseTent(tentId, resId, toState="av", newStatus="expired"){
-    const cur = (await safePull()) || data;
-    const tentsUpd = cur.tents.map(t=> t.id===tentId ? { ...t, state: toState } : t);
-    const resUpd = cur.reservations.map(r=> r.id===resId ? { ...r, status:newStatus } : r);
-    await strongMerge({ tents: tentsUpd, reservations: resUpd }, `Liberar toldo #${tentId}`);
+    const tentsUpd = data.tents.map(t=> t.id===tentId ? { ...t, state: toState } : t);
+    const resUpd = data.reservations.map(r=> r.id===resId ? { ...r, status:newStatus } : r);
+    await mergeState({ tents: tentsUpd, reservations: resUpd }, `Liberar toldo #${tentId}`);
     if(myPendingResId===resId) setMyPendingResId(null);
     if(selectedTent?.id===tentId && toState!=="pr") setSelectedTent(null);
   }
-
   async function confirmPaid(tentId, resId){
-    const cur = (await safePull()) || data;
-    const tentsUpd = cur.tents.map(t=> t.id===tentId ? { ...t, state:"oc" } : t);
-    const resUpd = cur.reservations.map(r=> r.id===resId ? { ...r, status:"paid" } : r);
-    await strongMerge({ tents: tentsUpd, reservations: resUpd }, `Pago confirmado #${tentId}`);
+    const tentsUpd = data.tents.map(t=> t.id===tentId ? { ...t, state:"oc" } : t);
+    const resUpd = data.reservations.map(r=> r.id===resId ? { ...r, status:"paid" } : r);
+    await mergeState({ tents: tentsUpd, reservations: resUpd }, `Pago confirmado #${tentId}`);
     if(myPendingResId===resId) setMyPendingResId(null);
   }
 
   // ===== WhatsApp =====
   const openWhatsApp = () => {
-    const num = (data?.payments?.whatsapp || "").replace(/[^0-9]/g, "");
+    const num = (data.payments.whatsapp || "").replace(/[^0-9]/g, "");
     if(!num) return alert("Configura el número de WhatsApp en Admin → Pagos");
     if(!selectedTent) return alert("Selecciona un toldo disponible primero");
     if(!userForm.name || !userForm.phone){ alert("Completa tu nombre y teléfono."); return; }
-    const cur = data?.payments?.currency || "USD";
+    const cur = data.payments.currency || "USD";
     const extrasLines = cart.length
       ? cart.map(x=> `• ${x.name} x${x.qty} — ${cur} ${(x.price * x.qty).toFixed(2)}`).join("\n")
       : "• Sin extras";
@@ -451,7 +304,7 @@ export default function App(){
       "",
       "*Cliente*",
       `• Nombre: ${userForm.name}`,
-      `• Teléfono (WhatsApp): ${userForm.phoneCountry}${(userForm.phone || '').replace(/[^0-9]/g, '')}`,
+      `• Teléfono (WhatsApp): ${userForm.phone}`,
       userForm.email ? `• Email: ${userForm.email}` : null,
       "",
       "*Extras*",
@@ -467,17 +320,17 @@ export default function App(){
     window.open(`https://wa.me/${num}?text=${txt}`, "_blank");
   };
 
-  // ===== Admin handlers (sin tocar UI) =====
+  // ===== Admin handlers (autosave sincronizado) =====
   const onChangeBrandName = async (v)=> mergeState({ brand: { ...data.brand, name: v } }, "Editar marca");
   const onChangeLogoUrl = async (v)=> mergeState({ brand: { ...data.brand, logoUrl: v } }, "Editar logo");
   const onChangeLogoSize = async (v)=> mergeState({ brand: { ...data.brand, logoSize: v } }, "Tamaño logo");
   const onChangeBgPath  = async (v)=> mergeState({ background: { ...data.background, publicPath: v } }, "Editar fondo");
   const onChangePayments = async (patch)=> mergeState({ payments: { ...data.payments, ...patch } }, "Editar pagos");
 
+  // Seed grid if empty
   const regenGrid = async ()=>{
-    const cur = (await safePull()) || data;
-    const tents = makeGrid(cur.layout.count || 20);
-    await strongMerge({ tents }, "Regenerar grilla");
+    const tents = makeGrid(data.layout.count || 20);
+    await mergeState({ tents }, "Regenerar grilla");
   };
 
   // Hotkeys
@@ -492,7 +345,6 @@ export default function App(){
   const bustLogo = `${data.brand.logoUrl || "/logo.png"}?v=${sessionRevParam}`;
   const bustMap  = `${data.background.publicPath || "/Mapa.png"}?v=${sessionRevParam}`;
 
-  // ===== Render (golden UI intacta) =====
   return (
     <div className="app-shell" onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
       <div className="phone">
@@ -624,7 +476,7 @@ export default function App(){
             </div>
             <div className="sheet-footer">
               <button className="btn" onClick={()=> setSheetTab(sheetTab==="carrito" ? "extras" : "carrito")}>Ir a {sheetTab==="carrito" ? "Extras" : "Carrito"}</button>
-              <div className="total">Total: {data?.payments?.currency} {total.toFixed(2)}</div>
+              <div className="total">Total: {data.payments.currency} {total.toFixed(2)}</div>
               <button className="btn primary" disabled={!selectedTent} title={!selectedTent ? "Primero selecciona un toldo" : ""} onClick={reservar}>Reservar</button>
             </div>
           </div>
@@ -632,47 +484,25 @@ export default function App(){
 
         {/* ADMIN */}
         {adminOpen && (
-          <div
-            className="overlay"
-            onMouseDown={(e) => { if (authed && e.target === e.currentTarget) setAdminOpen(false); }}
-            onTouchStart={(e) => { if (authed && e.target === e.currentTarget) setAdminOpen(false); }}
-          >
+          <div className="overlay" onClick={(e)=>{ if(e.target===e.currentTarget) setAdminOpen(false); }}>
             {!authed ? (
-              <div className="modal" onClick={(e)=> e.stopPropagation()}>
+              <div className="modal">
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
                   <div style={{ fontWeight:800, fontSize:16 }}>Ingresar al Administrador</div>
                   <div className="spacer"></div>
                   <button className="btn" onClick={()=> setAdminOpen(false)}>Cerrar</button>
                 </div>
                 <div className="row">
-                  <input
-                    className="input"
-                    id="pin"
-                    placeholder="PIN"
-                    type="password"
-                    autoFocus
-                    onClick={(e)=> e.stopPropagation()}
-                    onTouchStart={(e)=> e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        const v = e.currentTarget.value;
-                        v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
-                      }
-                    }}
-                  />
-                  <button
-                    className="btn primary"
-                    onClick={(e)=>{
-                      e.stopPropagation();
-                      const v = document.getElementById("pin").value;
-                      v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
-                    }}
-                  >Entrar</button>
+                  <input className="input" id="pin" placeholder="PIN" type="password" />
+                  <button className="btn primary" onClick={()=>{
+                    const v = document.getElementById("pin").value;
+                    v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
+                  }}>Entrar</button>
                 </div>
                 <div className="hint" style={{ marginTop:6 }}>Atajos: Alt/⌥+A • doble clic en el logo.</div>
               </div>
             ) : (
-              <div className="modal" onClick={(e)=> e.stopPropagation()}>
+              <div className="modal">
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
                   <div style={{ fontWeight:800, fontSize:16 }}>Administrador</div>
                   <div className="spacer"></div>
@@ -793,10 +623,10 @@ export default function App(){
                       <button className="btn" onClick={()=> setEditingMap(v=>!v)}>{editingMap ? "Dejar de editar mapa" : "Editar mapa (drag&drop)"}</button>
                       <button className="btn" onClick={regenGrid}>Regenerar en rejilla</button>
                       <button className="btn" onClick={async ()=>{
-                        const cur = (await safePull()) || data;
-                        const last = cur.tents[cur.tents.length-1];
+                        // Add tent
+                        const last = data.tents[data.tents.length-1];
                         const t = { id: (last?.id||0)+1, state:"av", x:0.5, y:0.5 };
-                        await strongMerge({ tents: [...cur.tents, t] }, "Agregar toldo");
+                        await mergeState({ tents: [...data.tents, t] }, "Agregar toldo");
                       }}>+ Agregar Toldo</button>
                     </div>
                     <div className="row" style={{ marginTop:8 }}>
@@ -814,59 +644,43 @@ export default function App(){
                   <div>
                     <div className="grid2">
                       <label><div>Moneda</div>
-                        <input className="input" value={data?.payments?.currency} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
+                        <input className="input" value={data.payments.currency} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
                       </label>
                       <label><div>WhatsApp (Ejem 58412...)</div>
-                        <input className="input" value={data?.payments?.whatsapp} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
+                        <input className="input" value={data.payments.whatsapp} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
                       </label>
                     </div>
-
-                    <div className="hr"></div>
-                    <div className="grid2">
-                      <label><div>Precio del toldo</div>
-                        <input
-                          className="input"
-                          type="number"
-                          min={0}
-                          value={Number(data?.payments?.tentPrice ?? 0)}
-                          onChange={(e)=> onChangePayments({ tentPrice: Number(e.target.value||0) })}
-                        />
-                      </label>
-                    </div>
-
                     <div className="hr"></div>
                     <div className="title">Mercado Pago</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Link de pago</div>
-                        <input className="input" placeholder="https://..." value={data?.payments?.mp.link} onChange={(e)=> onChangePayments({ mp: { ...data?.payments?.mp, link:e.target.value } })} />
+                        <input className="input" placeholder="https://..." value={data.payments.mp.link} onChange={(e)=> onChangePayments({ mp: { ...data.payments.mp, link:e.target.value } })} />
                       </label>
                       <label><div>Alias / Comentario</div>
-                        <input className="input" value={data?.payments?.mp.alias} onChange={(e)=> onChangePayments({ mp: { ...data?.payments?.mp, alias:e.target.value } })} />
+                        <input className="input" value={data.payments.mp.alias} onChange={(e)=> onChangePayments({ mp: { ...data.payments.mp, alias:e.target.value } })} />
                       </label>
                     </div>
-
                     <div className="hr"></div>
                     <div className="title">Pago Móvil</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Banco</div>
-                        <input className="input" value={data?.payments?.pagoMovil.bank} onChange={(e)=> onChangePayments({ pagoMovil: { ...data?.payments?.pagoMovil, bank:e.target.value } })} />
+                        <input className="input" value={data.payments.pagoMovil.bank} onChange={(e)=> onChangePayments({ pagoMovil: { ...data.payments.pagoMovil, bank:e.target.value } })} />
                       </label>
                       <label><div>RIF / CI</div>
-                        <input className="input" value={data?.payments?.pagoMovil.rif} onChange={(e)=> onChangePayments({ pagoMovil: { ...data?.payments?.pagoMovil, rif:e.target.value } })} />
+                        <input className="input" value={data.payments.pagoMovil.rif} onChange={(e)=> onChangePayments({ pagoMovil: { ...data.payments.pagoMovil, rif:e.target.value } })} />
                       </label>
                       <label><div>Teléfono</div>
-                        <input className="input" value={data?.payments?.pagoMovil.phone} onChange={(e)=> onChangePayments({ pagoMovil: { ...data?.payments?.pagoMovil, phone:e.target.value } })} />
+                        <input className="input" value={data.payments.pagoMovil.phone} onChange={(e)=> onChangePayments({ pagoMovil: { ...data.payments.pagoMovil, phone:e.target.value } })} />
                       </label>
                     </div>
-
                     <div className="hr"></div>
                     <div className="title">Zelle</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Email</div>
-                        <input className="input" value={data?.payments?.zelle.email} onChange={(e)=> onChangePayments({ zelle: { ...data?.payments?.zelle, email:e.target.value } })} />
+                        <input className="input" value={data.payments.zelle.email} onChange={(e)=> onChangePayments({ zelle: { ...data.payments.zelle, email:e.target.value } })} />
                       </label>
                       <label><div>Nombre</div>
-                        <input className="input" value={data?.payments?.zelle.name} onChange={(e)=> onChangePayments({ zelle: { ...data?.payments?.zelle, name:e.target.value } })} />
+                        <input className="input" value={data.payments.zelle.name} onChange={(e)=> onChangePayments({ zelle: { ...data.payments.zelle, name:e.target.value } })} />
                       </label>
                     </div>
                   </div>
@@ -899,9 +713,7 @@ export default function App(){
                       <div className="item" style={{ marginTop:10 }}>
                         <div className="title">Reserva pendiente del toldo #{selectedTent.id}</div>
                         {(()=>{
-                          const pending = data.reservations
-                            .filter(r=> r.tentId===selectedTent.id && r.status==="pending")
-                            .sort((a,b)=> a.createdAt>b.createdAt?-1:1)[0];
+                          const pending = data.reservations.filter(r=> r.tentId===selectedTent.id && r.status==="pending").sort((a,b)=> a.createdAt>b.createdAt?-1:1)[0];
                           if(!pending) return <div className="hint">No hay reservas pendientes.</div>;
                           return (
                             <>
@@ -949,7 +761,7 @@ export default function App(){
         {/* MODAL DE PAGO */}
         {payOpen && (
           <div className="overlay" onClick={(e)=>{ if(e.target===e.currentTarget) setPayOpen(false); }}>
-            <div className="modal" onClick={(e)=> e.stopPropagation()}>
+            <div className="modal">
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <div style={{ fontWeight:800, fontSize:16 }}>Confirmar Reserva</div>
                 <div className="spacer" />
@@ -962,7 +774,7 @@ export default function App(){
               </div>
 
               <div className="hint" style={{ marginTop:6 }}>
-                Código: <b>{resCode}</b> — Toldo #{selectedTent?.id} — Total: {data?.payments?.currency} {total.toFixed(2)}
+                Código: <b>{resCode}</b> — Toldo #{selectedTent?.id} — Total: {data.payments.currency} {total.toFixed(2)}
               </div>
 
               <div className="item" style={{ marginTop:8 }}>
@@ -972,36 +784,36 @@ export default function App(){
                     <input className="input" value={userForm.name} onChange={(e)=> setUserForm(u=> ({ ...u, name:e.target.value }))} />
                   </label>
                   <label>
-                    <div>Teléfono (WhatsApp)</div>
-                    <div className="row" style={{ marginTop: 4 }}>
-                      <select
-                        className="select"
-                        value={userForm.phoneCountry}
-                        onChange={(e) => setUserForm((u) => ({ ...u, phoneCountry: e.target.value }))}
-                      >
-                        <option value="+58">(+58) Venezuela</option>
-                        <option value="+57">(+57) Colombia</option>
-                        <option value="+1">(+1) USA/Canadá</option>
-                        <option value="+52">(+52) México</option>
-                        <option value="+54">(+54) Argentina</option>
-                        <option value="+34">(+34) España</option>
-                        <option value="+55">(+55) Brasil</option>
-                        <option value="+56">(+56) Chile</option>
-                        <option value="+51">(+51) Perú</option>
-                        <option value="+593">(+593) Ecuador</option>
-                        <option value="+507">(+507) Panamá</option>
-                      </select>
-                      <input
-                        className="input"
-                        placeholder="4120239460"
-                        value={userForm.phone}
-                        onChange={(e) => setUserForm((u) => ({ ...u, phone: e.target.value }))}
-                      />
-                    </div>
-                    <div className="hint" style={{ marginTop: 4 }}>
-                      Formato: solo números, sin 0 inicial, ni + ni espacios. Se enviará como {`${userForm.phoneCountry}${(userForm.phone || '').replace(/[^0-9]/g, '')}` }.
-                    </div>
-                  </label>
+                  <div>Teléfono (WhatsApp)</div>
+                  <div className="row" style={{ marginTop: 4 }}>
+                    <select
+                      className="select"
+                      value={userForm.phoneCountry}
+                      onChange={(e) => setUserForm((u) => ({ ...u, phoneCountry: e.target.value }))}
+                    >
+                      <option value="+58">(+58) Venezuela</option>
+                      <option value="+57">(+57) Colombia</option>
+                      <option value="+1">(+1) USA/Canadá</option>
+                      <option value="+52">(+52) México</option>
+                      <option value="+54">(+54) Argentina</option>
+                      <option value="+34">(+34) España</option>
+                      <option value="+55">(+55) Brasil</option>
+                      <option value="+56">(+56) Chile</option>
+                      <option value="+51">(+51) Perú</option>
+                      <option value="+593">(+593) Ecuador</option>
+                      <option value="+507">(+507) Panamá</option>
+                    </select>
+                    <input
+                      className="input"
+                      placeholder="4120239460"
+                      value={userForm.phone}
+                      onChange={(e) => setUserForm((u) => ({ ...u, phone: e.target.value }))}
+                    />
+                  </div>
+                  <div className="hint" style={{ marginTop: 4 }}>
+                    Formato: solo números, sin 0 inicial, ni + ni espacios. Se enviará como {`${userForm.phoneCountry}${(userForm.phone || '').replace(/[^0-9]/g, '')}` }.
+                  </div>
+                </label>
                 </div>
                 <div className="row" style={{ marginTop:6 }}>
                   <input className="input" placeholder="Correo (opcional)" value={userForm.email} onChange={(e)=> setUserForm(u=> ({ ...u, email:e.target.value }))} />
@@ -1019,8 +831,8 @@ export default function App(){
                   <div className="title">Mercado Pago</div>
                   <div className="hint">Usa tu link de pago o alias configurado.</div>
                   <div className="row" style={{ marginTop:8 }}>
-                    <input className="input" readOnly value={data?.payments?.mp.link || data?.payments?.mp.alias || "(Configura en Admin → Pagos)"} />
-                    {data?.payments?.mp.link && (<a className="btn" href={data?.payments?.mp.link} target="_blank" rel="noreferrer">Abrir</a>)}
+                    <input className="input" readOnly value={data.payments.mp.link || data.payments.mp.alias || "(Configura en Admin → Pagos)"} />
+                    {data.payments.mp.link && (<a className="btn" href={data.payments.mp.link} target="_blank" rel="noreferrer">Abrir</a>)}
                   </div>
                 </div>
               )}
@@ -1029,16 +841,16 @@ export default function App(){
                 <div className="item" style={{ marginTop:8 }}>
                   <div className="title">Pago Móvil</div>
                   <div className="row" style={{ marginTop:6 }}>
-                    <div className="grow">Banco: <b>{data?.payments?.pagoMovil.bank || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil.bank || "")}>Copiar</button>
+                    <div className="grow">Banco: <b>{data.payments.pagoMovil.bank || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data.payments.pagoMovil.bank || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">RIF/CI: <b>{data?.payments?.pagoMovil.rif || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil.rif || "")}>Copiar</button>
+                    <div className="grow">RIF/CI: <b>{data.payments.pagoMovil.rif || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data.payments.pagoMovil.rif || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">Teléfono: <b>{data?.payments?.pagoMovil.phone || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil.phone || "")}>Copiar</button>
+                    <div className="grow">Teléfono: <b>{data.payments.pagoMovil.phone || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data.payments.pagoMovil.phone || "")}>Copiar</button>
                   </div>
                 </div>
               )}
@@ -1047,12 +859,12 @@ export default function App(){
                 <div className="item" style={{ marginTop:8 }}>
                   <div className="title">Zelle</div>
                   <div className="row" style={{ marginTop:6 }}>
-                    <div className="grow">Email: <b>{data?.payments?.zelle.email || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.zelle.email || "")}>Copiar</button>
+                    <div className="grow">Email: <b>{data.payments.zelle.email || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data.payments.zelle.email || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">Nombre: <b>{data?.payments?.zelle.name || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.zelle.name || "")}>Copiar</button>
+                    <div className="grow">Nombre: <b>{data.payments.zelle.name || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data.payments.zelle.name || "")}>Copiar</button>
                   </div>
                 </div>
               )}
