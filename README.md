@@ -1,14 +1,9 @@
 
-# Coral Club — Clean Reboot (auto-seed)
+# Coral Club — Node runtime (auto-seed + proxy)
 - UI intacta (tu App.jsx/App.css).
-- Proxy /api/kv y /api/boot (auto-seed si KV está vacío).
-- Multiusuario con polling ~1.5s y merge + incr.
+- Proxy /api/kv (Node) y /api/boot (auto-seed).
+- Multiusuario con KV y polling ~1.5s.
 
 ## Variables en Vercel
-KV_REST_API_URL= (sin slash final)
+KV_REST_API_URL=
 KV_REST_API_TOKEN=
-
-## Scripts
-npm i
-npm run dev
-npm run build
