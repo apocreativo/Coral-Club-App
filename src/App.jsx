@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import { kvGet, kvSet, kvIncr, kvMerge } from "./useKV";
@@ -17,10 +18,11 @@ const initialData = {
   payments: {
     currency: "USD",
     whatsapp: "584121234567",
-    tentPrice: 10, // <- NUEVO: precio base del toldo
     mp: { link: "", alias: "" },
     pagoMovil: { bank: "", rif: "", phone: "" },
     zelle: { email: "", name: "" },
+    // tentPrice es opcional; si no existe, se toma 0
+    tentPrice: 10,
   },
   categories: [
     {
@@ -83,6 +85,8 @@ function usePolling(onTick, delay=1500){
   }, [onTick, delay]);
 }
 
+function deepEqual(a,b){ try{ return JSON.stringify(a)===JSON.stringify(b);}catch(_){return false;}}
+
 function logEvent(setData, type, message){
   setData(s=>{
     const row = { ts: nowISO(), type, message };
@@ -115,96 +119,105 @@ export default function App(){
   const [userForm, setUserForm] = useState({ name: '', phoneCountry: '+58', phone: '', email: '' });
   const [myPendingResId, setMyPendingResId] = useState(null);
 
-  // ===== Carrito + TOTAL (con precio del toldo) =====
   const [cart, setCart] = useState([]);
-  const tentPrice = Number(data?.payments?.tentPrice ?? 0) || 0;
-  const total = useMemo(() => {
-    const extras = cart.reduce((acc, item) => acc + (Number(item.price) || 0) * (item.qty || 0), 0);
-    return (selectedTent ? tentPrice : 0) + extras;
-  }, [selectedTent, cart, tentPrice]);
+
+  // ======= TOTAL (tentPrice + extras si hay toldo) =======
+  const tentPrice = Number((data?.payments?.tentPrice) ?? 0) || 0;
+  const extrasTotal = useMemo(
+    () => cart.reduce((acc, it) => acc + (Number(it.price)||0) * (it.qty||0), 0),
+    [cart]
+  );
+  const total = useMemo(
+    () => (selectedTent ? tentPrice : 0) + extrasTotal,
+    [selectedTent, tentPrice, extrasTotal]
+  );
 
   const resCode = useMemo(()=>{
     const d = new Date(); const s = d.toISOString().replace(/[-:T.Z]/g,"").slice(2,12);
     return `CC-${selectedTent?.id||"XX"}-${s}`;
   }, [selectedTent]);
 
-  // top inset dynamic
+  // ===== Anti-jitter topbar/leyenda =====
   useEffect(()=>{
     if(!topbarRef.current) return;
     const el = topbarRef.current;
-    const ro = new ResizeObserver((entries)=>{
-      for(const entry of entries){
-        const h = entry.contentRect.height || el.offsetHeight || 46;
-        setTopInsetPx(12 + h + 12);
-      }
+    let raf = 0, last = 0;
+
+    const ro = new ResizeObserver(([entry])=>{
+      const h = entry?.contentRect?.height || el.offsetHeight || 46;
+      if (Math.abs(h - last) < 2) return; // ignora micro-oscilaciones
+      last = h;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(()=> setTopInsetPx(12 + h + 12));
     });
+
     ro.observe(el);
-    return ()=> ro.disconnect();
+    // inicial
+    setTopInsetPx(12 + (el.offsetHeight || 46) + 12);
+    return ()=> { ro.disconnect(); cancelAnimationFrame(raf); };
   }, []);
   useEffect(()=>{
     if(topbarRef.current){
       const h = topbarRef.current.offsetHeight || 46;
       setTopInsetPx(12 + h + 12);
     }
-  }, [data?.brand?.logoSize, data?.brand?.name]);
+  }, [data.brand.logoSize, data.brand.name]);
 
-  // ===== Carga inicial desde KV (o seedea) =====
+  // ===== Carga inicial desde KV (sin bucles) =====
+  const initOnce = useRef(false);
   useEffect(()=>{
+    if (initOnce.current) return;
+    initOnce.current = true;
+
     (async ()=>{
       try{
         const cur = await kvGet(STATE_KEY);
-        if(!cur || !cur.brand || !cur.background || !cur.layout){
+        if(!cur){
           const seeded = { ...initialData, tents: makeGrid(initialData.layout.count) };
           await kvSet(STATE_KEY, seeded);
-          await kvSet(REV_KEY, 1);
-          setData(seeded); setRev(1);
-          setSessionRevParam("1");
+          // REV solo si no existe
+          const haveRev = await kvGet(REV_KEY);
+          if (typeof haveRev !== "number") await kvSet(REV_KEY, 1);
+          const r = (await kvGet(REV_KEY)) ?? 1;
+          setData(seeded); setRev(r); setSessionRevParam(String(r));
           logEvent(setData, "system", "Seed inicial");
         } else {
-          // Normalizamos por si falta tentPrice u otros campos
-          const normalized = {
-            ...initialData,
-            ...cur,
-            payments: { ...initialData.payments, ...(cur.payments||{}) },
-          };
-          if(!Array.isArray(normalized.tents) || normalized.tents.length===0){
-            normalized.tents = makeGrid(normalized.layout?.count || 20);
-          }
-          setData(normalized);
+          const withTents = Array.isArray(cur.tents) && cur.tents.length
+            ? cur
+            : { ...cur, tents: makeGrid(cur?.layout?.count || 20) };
+          setData(withTents);
           const r = (await kvGet(REV_KEY)) ?? 1;
           setRev(r); setSessionRevParam(String(r));
         }
-        setLoaded(true);
       }catch(e){
-        console.error(e);
+        console.error("Error inicial:", e);
+      }finally{
         setLoaded(true);
       }
     })();
   }, []);
 
-  // ===== Polling de rev =====
+  // ===== Polling de rev (solo si cambia y el estado difiere) =====
   usePolling(async ()=>{
     try{
-      const r = await kvGet(REV_KEY);
-      if(typeof r === "number" && r !== rev){
-        setRev(r);
-        const cur = await kvGet(STATE_KEY);
-        if(cur){
-          const normalized = {
-            ...initialData,
-            ...cur,
-            payments: { ...initialData.payments, ...(cur.payments||{}) },
-          };
-          setData(normalized);
-          setSessionRevParam(String(r));
-        }
+      const newRev = await kvGet(REV_KEY);
+      if (typeof newRev !== "number" || newRev === rev) return;
+      const s = await kvGet(STATE_KEY);
+      if (s && !deepEqual(s, data)) {
+        setData(s);
+        setRev(newRev);
+        setSessionRevParam(String(newRev));
+      } else {
+        setRev(newRev);
+        setSessionRevParam(String(newRev));
       }
-    }catch(e){ /* ignore */ }
+    }catch(_){}
   }, 1500);
 
   // ===== Expiración de reservas pendientes =====
   useEffect(()=>{
     const id = setInterval(async ()=>{
+      if (!loaded) return;
       const now = nowISO();
       const expired = data.reservations.filter(r => r.status==="pending" && r.expiresAt && r.expiresAt <= now);
       if(expired.length){
@@ -219,18 +232,24 @@ export default function App(){
       }
     }, 10000);
     return ()=> clearInterval(id);
-  }, [data.reservations, data.tents]);
+  }, [loaded, data.reservations, data.tents]);
+
+  // ===== Autogenerar toldos si llegaron vacíos (una vez cargado) =====
+  useEffect(() => {
+    if (!loaded) return;
+    if (!Array.isArray(data.tents) || data.tents.length === 0) {
+      (async () => {
+        const tents = makeGrid(data?.layout?.count || 20);
+        await kvMerge(STATE_KEY, { tents }, REV_KEY);
+        setData(s => ({ ...s, tents }));
+      })();
+    }
+  }, [loaded]); // solo una vez tras la carga
 
   // ===== Helpers de merge =====
   const mergeState = async (patch, logMsg) => {
     const next = await kvMerge(STATE_KEY, patch, REV_KEY);
-    // Normalizar de nuevo para evitar campos faltantes
-    const normalized = {
-      ...initialData,
-      ...next,
-      payments: { ...initialData.payments, ...(next.payments||{}) },
-    };
-    setData(normalized);
+    setData(next);
     const r = await kvGet(REV_KEY);
     setRev(r||0); setSessionRevParam(String(r||0));
     if(logMsg) logEvent(setData, "action", logMsg);
@@ -252,7 +271,7 @@ export default function App(){
     x = Math.min(0.98, Math.max(0.02, x));
     y = Math.min(0.98, Math.max(0.02, y));
     const tentsUpd = data.tents.map(t => t.id===dragId ? { ...t, x:+x.toFixed(4), y:+y.toFixed(4) } : t);
-    setData(s=> ({ ...s, tents: tentsUpd })); // local preview
+    setData(s=> ({ ...s, tents: tentsUpd })); // preview local
   }, 150);
   const onMouseUp = async ()=>{
     if(!editingMap || dragId==null) return;
@@ -286,7 +305,6 @@ export default function App(){
       customer: { name: userForm.name||"", phone: userForm.phone||"", email: userForm.email||"" },
       cart,
     };
-    // set 'pr' if still available
     const t = data.tents.find(x=> x.id===selectedTent.id);
     if(!t || t.state!=="av"){ alert("Ese toldo ya no está disponible"); return; }
     const tentsUpd = data.tents.map(x=> x.id===t.id ? { ...x, state:"pr" } : x);
@@ -322,7 +340,7 @@ export default function App(){
     const metodo = (payTab==="mp" ? "Mercado Pago" : payTab==="pm" ? "Pago Móvil" : payTab==="zelle" ? "Zelle" : "—");
     const fecha = new Date(); const fechaTxt = fecha.toLocaleDateString() + " " + fecha.toLocaleTimeString();
     const msg = [
-      `Hola 👋, me gustaría realizar una *reserva en ${data?.brand?.name || "su establecimiento"}*.`,
+      `Hola 👋, me gustaría realizar una *reserva en ${data.brand?.name || "su establecimiento"}*.`,
       "",
       `*Código:* ${resCode}`,
       `*Toldo:* #${selectedTent?.id}`,
@@ -353,9 +371,9 @@ export default function App(){
   const onChangeBgPath  = async (v)=> mergeState({ background: { ...data.background, publicPath: v } }, "Editar fondo");
   const onChangePayments = async (patch)=> mergeState({ payments: { ...data.payments, ...patch } }, "Editar pagos");
 
-  // Seed grid if empty
+  // Seed grid manual
   const regenGrid = async ()=>{
-    const tents = makeGrid(data?.layout?.count || 20);
+    const tents = makeGrid(data.layout.count || 20);
     await mergeState({ tents }, "Regenerar grilla");
   };
 
@@ -368,8 +386,8 @@ export default function App(){
     return ()=> window.removeEventListener("keydown", onKey);
   }, []);
 
-  const bustLogo = `${(data?.brand?.logoUrl || "/logo.png")}?v=${sessionRevParam}`;
-  const bustMap  = `${(data?.background?.publicPath || "/Mapa.png")}?v=${sessionRevParam}`;
+  const bustLogo = `${data.brand.logoUrl || "/logo.png"}?v=${sessionRevParam}`;
+  const bustMap  = `${data.background.publicPath || "/Mapa.png"}?v=${sessionRevParam}`;
 
   return (
     <div className="app-shell" onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
@@ -381,12 +399,12 @@ export default function App(){
           <img
             src={bustLogo}
             alt="logo"
-            width={data?.brand?.logoSize || 42} height={data?.brand?.logoSize || 42}
+            width={data.brand.logoSize} height={data.brand.logoSize}
             style={{ objectFit:"contain", borderRadius:12, filter:"drop-shadow(0 1px 2px rgba(0,0,0,.5))" }}
             onDoubleClick={()=>{ setAdminOpen(true); setAuthed(false); }}
             onError={(e)=>{ e.currentTarget.src = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='100%' height='100%' fill='%23131a22'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' fill='%23cbd5e1' font-size='10'>LOGO</text></svg>`; }}
           />
-          <div className="brand">{data?.brand?.name || ""}</div>
+          <div className="brand">{data.brand.name}</div>
           <div className="spacer" />
           {/* Leyenda */}
           <div className="legend" style={{ top: `${topInsetPx}px` }}>
@@ -512,18 +530,12 @@ export default function App(){
         {adminOpen && (
           <div
             className="overlay"
-            // iPad: evitar que un “tap fantasma” cierre el modal mientras se ingresa el PIN
-            onMouseDown={(e) => {
-              if (!authed) return; // no cerrar mientras estás en el diálogo de PIN
-              if (e.target === e.currentTarget) setAdminOpen(false);
-            }}
-            onTouchStart={(e) => {
-              if (!authed) return;
-              if (e.target === e.currentTarget) setAdminOpen(false);
-            }}
+            // iPad-safe: no cerrar mientras pides PIN; y solo cerrar si se toca FUERA del modal
+            onMouseDown={(e) => { if (authed && e.target === e.currentTarget) setAdminOpen(false); }}
+            onTouchStart={(e) => { if (authed && e.target === e.currentTarget) setAdminOpen(false); }}
           >
             {!authed ? (
-              <div className="modal">
+              <div className="modal" onClick={(e)=> e.stopPropagation()}>
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
                   <div style={{ fontWeight:800, fontSize:16 }}>Ingresar al Administrador</div>
                   <div className="spacer"></div>
@@ -552,14 +564,12 @@ export default function App(){
                       const v = document.getElementById("pin").value;
                       v === DEFAULT_PIN ? setAuthed(true) : alert("PIN inválido");
                     }}
-                  >
-                    Entrar
-                  </button>
+                  >Entrar</button>
                 </div>
                 <div className="hint" style={{ marginTop:6 }}>Atajos: Alt/⌥+A • doble clic en el logo.</div>
               </div>
             ) : (
-              <div className="modal">
+              <div className="modal" onClick={(e)=> e.stopPropagation()}>
                 <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
                   <div style={{ fontWeight:800, fontSize:16 }}>Administrador</div>
                   <div className="spacer"></div>
@@ -657,18 +667,18 @@ export default function App(){
                   <div>
                     <div className="grid2">
                       <label><div>Nombre de marca</div>
-                        <input className="input" value={data?.brand?.name || ""} onChange={(e)=> onChangeBrandName(e.target.value)} />
+                        <input className="input" value={data.brand.name} onChange={(e)=> onChangeBrandName(e.target.value)} />
                       </label>
                       <label><div>Tamaño del logo</div>
-                        <input className="input" type="number" min={24} max={120} value={data?.brand?.logoSize || 42} onChange={(e)=> onChangeLogoSize(Math.max(24, Math.min(120, parseInt(e.target.value||"40"))))} />
+                        <input className="input" type="number" min={24} max={120} value={data.brand.logoSize} onChange={(e)=> onChangeLogoSize(Math.max(24, Math.min(120, parseInt(e.target.value||"40"))))} />
                       </label>
                     </div>
                     <div className="grid2" style={{ marginTop:8 }}>
                       <label><div>Logo – ruta pública</div>
-                        <input className="input" placeholder="/logo.png" value={data?.brand?.logoUrl || "/logo.png"} onChange={(e)=> onChangeLogoUrl(e.target.value)} />
+                        <input className="input" placeholder="/logo.png" value={data.brand.logoUrl} onChange={(e)=> onChangeLogoUrl(e.target.value)} />
                       </label>
                       <label><div>Fondo – ruta pública</div>
-                        <input className="input" placeholder="/Mapa.png" value={data?.background?.publicPath || "/Mapa.png"} onChange={(e)=> onChangeBgPath(e.target.value)} />
+                        <input className="input" placeholder="/Mapa.png" value={data.background.publicPath} onChange={(e)=> onChangeBgPath(e.target.value)} />
                       </label>
                     </div>
                   </div>
@@ -680,17 +690,16 @@ export default function App(){
                       <button className="btn" onClick={()=> setEditingMap(v=>!v)}>{editingMap ? "Dejar de editar mapa" : "Editar mapa (drag&drop)"}</button>
                       <button className="btn" onClick={regenGrid}>Regenerar en rejilla</button>
                       <button className="btn" onClick={async ()=>{
-                        // Add tent
                         const last = data.tents[data.tents.length-1];
                         const t = { id: (last?.id||0)+1, state:"av", x:0.5, y:0.5 };
                         await mergeState({ tents: [...data.tents, t] }, "Agregar toldo");
                       }}>+ Agregar Toldo</button>
                     </div>
                     <div className="row" style={{ marginTop:8 }}>
-                      <input className="input" type="number" min={1} value={data?.layout?.count || 20}
+                      <input className="input" type="number" min={1} value={data.layout.count}
                         onChange={async (e)=>{
                           const cnt = Math.max(1, parseInt(e.target.value||"1"));
-                          await mergeState({ layout: { ...(data?.layout||{}), count: cnt } }, "Editar cantidad");
+                          await mergeState({ layout: { ...data.layout, count: cnt } }, "Editar cantidad");
                         }} />
                     </div>
                     <div className="hint" style={{ marginTop:6 }}>Al editar, se oculta la hoja inferior para arrastrar hasta abajo del mapa.</div>
@@ -701,59 +710,59 @@ export default function App(){
                   <div>
                     <div className="grid2">
                       <label><div>Moneda</div>
-                        <input className="input" value={data?.payments?.currency || "USD"} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
+                        <input className="input" value={data?.payments?.currency} onChange={(e)=> onChangePayments({ currency:e.target.value })} />
                       </label>
                       <label><div>WhatsApp (Ejem 58412...)</div>
-                        <input className="input" value={data?.payments?.whatsapp || ""} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
+                        <input className="input" value={data?.payments?.whatsapp} onChange={(e)=> onChangePayments({ whatsapp:e.target.value })} />
                       </label>
                     </div>
 
-                    {/* NUEVO: Precio del toldo */}
-                    <div className="grid2" style={{ marginTop:8 }}>
+                    <div className="hr"></div>
+                    <div className="grid2">
                       <label><div>Precio del toldo</div>
                         <input
                           className="input"
                           type="number"
                           min={0}
-                          step="0.01"
                           value={Number(data?.payments?.tentPrice ?? 0)}
-                          onChange={(e)=> onChangePayments({ tentPrice: Number(e.target.value || 0) })}
+                          onChange={(e)=> onChangePayments({ tentPrice: Number(e.target.value||0) })}
                         />
                       </label>
-                      <div />
                     </div>
 
                     <div className="hr"></div>
                     <div className="title">Mercado Pago</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Link de pago</div>
-                        <input className="input" placeholder="https://..." value={data?.payments?.mp?.link || ""} onChange={(e)=> onChangePayments({ mp: { ...(data?.payments?.mp||{}), link:e.target.value } })} />
+                        <input className="input" placeholder="https://..." value={data?.payments?.mp.link} onChange={(e)=> onChangePayments({ mp: { ...data?.payments?.mp, link:e.target.value } })} />
                       </label>
                       <label><div>Alias / Comentario</div>
-                        <input className="input" value={data?.payments?.mp?.alias || ""} onChange={(e)=> onChangePayments({ mp: { ...(data?.payments?.mp||{}), alias:e.target.value } })} />
+                        <input className="input" value={data?.payments?.mp.alias} onChange={(e)=> onChangePayments({ mp: { ...data?.payments?.mp, alias:e.target.value } })} />
                       </label>
                     </div>
+
                     <div className="hr"></div>
                     <div className="title">Pago Móvil</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Banco</div>
-                        <input className="input" value={data?.payments?.pagoMovil?.bank || ""} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data?.payments?.pagoMovil||{}), bank:e.target.value } })} />
+                        <input className="input" value={data?.payments?.pagoMovil.bank} onChange={(e)=> onChangePayments({ pagoMovil: { ...data?.payments?.pagoMovil, bank:e.target.value } })} />
                       </label>
                       <label><div>RIF / CI</div>
-                        <input className="input" value={data?.payments?.pagoMovil?.rif || ""} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data?.payments?.pagoMovil||{}), rif:e.target.value } })} />
+                        <input className="input" value={data?.payments?.pagoMovil.rif} onChange={(e)=> onChangePayments({ pagoMovil: { ...data?.payments?.pagoMovil, rif:e.target.value } })} />
                       </label>
                       <label><div>Teléfono</div>
-                        <input className="input" value={data?.payments?.pagoMovil?.phone || ""} onChange={(e)=> onChangePayments({ pagoMovil: { ...(data?.payments?.pagoMovil||{}), phone:e.target.value } })} />
+                        <input className="input" value={data?.payments?.pagoMovil.phone} onChange={(e)=> onChangePayments({ pagoMovil: { ...data?.payments?.pagoMovil, phone:e.target.value } })} />
                       </label>
                     </div>
+
                     <div className="hr"></div>
                     <div className="title">Zelle</div>
                     <div className="grid2" style={{ marginTop:6 }}>
                       <label><div>Email</div>
-                        <input className="input" value={data?.payments?.zelle?.email || ""} onChange={(e)=> onChangePayments({ zelle: { ...(data?.payments?.zelle||{}), email:e.target.value } })} />
+                        <input className="input" value={data?.payments?.zelle.email} onChange={(e)=> onChangePayments({ zelle: { ...data?.payments?.zelle, email:e.target.value } })} />
                       </label>
                       <label><div>Nombre</div>
-                        <input className="input" value={data?.payments?.zelle?.name || ""} onChange={(e)=> onChangePayments({ zelle: { ...(data?.payments?.zelle||{}), name:e.target.value } })} />
+                        <input className="input" value={data?.payments?.zelle.name} onChange={(e)=> onChangePayments({ zelle: { ...data?.payments?.zelle, name:e.target.value } })} />
                       </label>
                     </div>
                   </div>
@@ -834,7 +843,7 @@ export default function App(){
         {/* MODAL DE PAGO */}
         {payOpen && (
           <div className="overlay" onClick={(e)=>{ if(e.target===e.currentTarget) setPayOpen(false); }}>
-            <div className="modal">
+            <div className="modal" onClick={(e)=> e.stopPropagation()}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <div style={{ fontWeight:800, fontSize:16 }}>Confirmar Reserva</div>
                 <div className="spacer" />
@@ -857,36 +866,36 @@ export default function App(){
                     <input className="input" value={userForm.name} onChange={(e)=> setUserForm(u=> ({ ...u, name:e.target.value }))} />
                   </label>
                   <label>
-                  <div>Teléfono (WhatsApp)</div>
-                  <div className="row" style={{ marginTop: 4 }}>
-                    <select
-                      className="select"
-                      value={userForm.phoneCountry}
-                      onChange={(e) => setUserForm((u) => ({ ...u, phoneCountry: e.target.value }))}
-                    >
-                      <option value="+58">(+58) Venezuela</option>
-                      <option value="+57">(+57) Colombia</option>
-                      <option value="+1">(+1) USA/Canadá</option>
-                      <option value="+52">(+52) México</option>
-                      <option value="+54">(+54) Argentina</option>
-                      <option value="+34">(+34) España</option>
-                      <option value="+55">(+55) Brasil</option>
-                      <option value="+56">(+56) Chile</option>
-                      <option value="+51">(+51) Perú</option>
-                      <option value="+593">(+593) Ecuador</option>
-                      <option value="+507">(+507) Panamá</option>
-                    </select>
-                    <input
-                      className="input"
-                      placeholder="4120239460"
-                      value={userForm.phone}
-                      onChange={(e) => setUserForm((u) => ({ ...u, phone: e.target.value }))}
-                    />
-                  </div>
-                  <div className="hint" style={{ marginTop: 4 }}>
-                    Formato: solo números, sin 0 inicial, ni + ni espacios. Se enviará como {`${userForm.phoneCountry}${(userForm.phone || '').replace(/[^0-9]/g, '')}` }.
-                  </div>
-                </label>
+                    <div>Teléfono (WhatsApp)</div>
+                    <div className="row" style={{ marginTop: 4 }}>
+                      <select
+                        className="select"
+                        value={userForm.phoneCountry}
+                        onChange={(e) => setUserForm((u) => ({ ...u, phoneCountry: e.target.value }))}
+                      >
+                        <option value="+58">(+58) Venezuela</option>
+                        <option value="+57">(+57) Colombia</option>
+                        <option value="+1">(+1) USA/Canadá</option>
+                        <option value="+52">(+52) México</option>
+                        <option value="+54">(+54) Argentina</option>
+                        <option value="+34">(+34) España</option>
+                        <option value="+55">(+55) Brasil</option>
+                        <option value="+56">(+56) Chile</option>
+                        <option value="+51">(+51) Perú</option>
+                        <option value="+593">(+593) Ecuador</option>
+                        <option value="+507">(+507) Panamá</option>
+                      </select>
+                      <input
+                        className="input"
+                        placeholder="4120239460"
+                        value={userForm.phone}
+                        onChange={(e) => setUserForm((u) => ({ ...u, phone: e.target.value }))}
+                      />
+                    </div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      Formato: solo números, sin 0 inicial, ni + ni espacios. Se enviará como {`${userForm.phoneCountry}${(userForm.phone || '').replace(/[^0-9]/g, '')}` }.
+                    </div>
+                  </label>
                 </div>
                 <div className="row" style={{ marginTop:6 }}>
                   <input className="input" placeholder="Correo (opcional)" value={userForm.email} onChange={(e)=> setUserForm(u=> ({ ...u, email:e.target.value }))} />
@@ -904,8 +913,8 @@ export default function App(){
                   <div className="title">Mercado Pago</div>
                   <div className="hint">Usa tu link de pago o alias configurado.</div>
                   <div className="row" style={{ marginTop:8 }}>
-                    <input className="input" readOnly value={data?.payments?.mp?.link || data?.payments?.mp?.alias || "(Configura en Admin → Pagos)"} />
-                    {data?.payments?.mp?.link && (<a className="btn" href={data?.payments?.mp?.link} target="_blank" rel="noreferrer">Abrir</a>)}
+                    <input className="input" readOnly value={data?.payments?.mp.link || data?.payments?.mp.alias || "(Configura en Admin → Pagos)"} />
+                    {data?.payments?.mp.link && (<a className="btn" href={data?.payments?.mp.link} target="_blank" rel="noreferrer">Abrir</a>)}
                   </div>
                 </div>
               )}
@@ -914,16 +923,16 @@ export default function App(){
                 <div className="item" style={{ marginTop:8 }}>
                   <div className="title">Pago Móvil</div>
                   <div className="row" style={{ marginTop:6 }}>
-                    <div className="grow">Banco: <b>{data?.payments?.pagoMovil?.bank || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil?.bank || "")}>Copiar</button>
+                    <div className="grow">Banco: <b>{data?.payments?.pagoMovil.bank || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil.bank || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">RIF/CI: <b>{data?.payments?.pagoMovil?.rif || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil?.rif || "")}>Copiar</button>
+                    <div className="grow">RIF/CI: <b>{data?.payments?.pagoMovil.rif || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil.rif || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">Teléfono: <b>{data?.payments?.pagoMovil?.phone || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil?.phone || "")}>Copiar</button>
+                    <div className="grow">Teléfono: <b>{data?.payments?.pagoMovil.phone || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.pagoMovil.phone || "")}>Copiar</button>
                   </div>
                 </div>
               )}
@@ -932,12 +941,12 @@ export default function App(){
                 <div className="item" style={{ marginTop:8 }}>
                   <div className="title">Zelle</div>
                   <div className="row" style={{ marginTop:6 }}>
-                    <div className="grow">Email: <b>{data?.payments?.zelle?.email || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.zelle?.email || "")}>Copiar</button>
+                    <div className="grow">Email: <b>{data?.payments?.zelle.email || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.zelle.email || "")}>Copiar</button>
                   </div>
                   <div className="row">
-                    <div className="grow">Nombre: <b>{data?.payments?.zelle?.name || "–"}</b></div>
-                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.zelle?.name || "")}>Copiar</button>
+                    <div className="grow">Nombre: <b>{data?.payments?.zelle.name || "–"}</b></div>
+                    <button className="btn copy" onClick={()=> navigator.clipboard.writeText(data?.payments?.zelle.name || "")}>Copiar</button>
                   </div>
                 </div>
               )}
